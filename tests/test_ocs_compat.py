@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import unittest
@@ -98,12 +99,20 @@ def _dice(a: str, b: str) -> float:
 
 
 def split_answer(answer: str, separators=("===", "#", "---", "###", "|", ";", "；")) -> list[str]:
+    """严格对齐 5.0 的 splitAnswer：先试 JSON 数组，失败才按分隔符切。"""
     answer = answer.strip()
     if not answer:
         return []
-    for sep in separators:
-        if sep in answer:
-            return [part.strip() for part in answer.split(sep) if part.strip()]
+    try:
+        data = json.loads(answer)
+    except json.JSONDecodeError:
+        for sep in separators:
+            if sep in answer:
+                return [part.strip() for part in answer.split(sep) if part.strip()]
+        return [answer]
+    if isinstance(data, list):
+        return [str(item).strip() for item in data if str(item).strip()]
+    # JSON 解析成功但不是数组（如纯数字），不会走分隔符分支
     return [answer]
 
 
@@ -185,14 +194,15 @@ def resolve_judgement(answers: list[str], options: list[str]) -> str | None:
 
 
 def resolve_completion(answers: list[str], blank_count: int) -> list[str] | None:
-    for answer in answers:
-        parts = split_answer(answer)
-        if not parts:
-            continue
-        if len(parts) == blank_count:
-            return parts
+    """一个题库返回的答案列表 → 每个空要填的内容。"""
+    ans = [item for item in answers if item]
+    if len(ans) == 1:
+        ans = split_answer(ans[0])
+    if ans and (len(ans) == blank_count or blank_count == 1):
+        if len(ans) == blank_count:
+            return ans
         if blank_count == 1:
-            return [" ".join(parts)]
+            return [" ".join(ans)]
     return None
 
 
@@ -248,6 +258,17 @@ class OCSCompatTest(unittest.TestCase):
         ]
         self.assertEqual(resolve_single(["B"], option_texts), option_texts[1])
         self.assertEqual(resolve_multiple(["A#C"], option_texts), [option_texts[0], option_texts[2]])
+
+    def test_completion_answer_with_separator(self):
+        """答案本身含 # 时，本程序会换成 JSON 数组，OCS 解析后原样保留。"""
+        raw = '["2#3#5#7#"]'
+        self.assertEqual(resolve_completion([raw], 1), ["2#3#5#7#"])
+        # 旧的直接拼接会被切碎成用空格连接
+        self.assertEqual(resolve_completion(["2#3#5#7#"], 1), ["2 3 5 7"])
+
+    def test_completion_multiple_blanks(self):
+        self.assertEqual(resolve_completion(['["甲","乙"]'], 2), ["甲", "乙"])
+        self.assertEqual(resolve_completion(["甲#乙"], 2), ["甲", "乙"])
 
     def test_math_option_not_confused(self):
         """选项内容带数字时，不能把 A/B/C 字母和选项内容搞混。"""

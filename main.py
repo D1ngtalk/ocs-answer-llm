@@ -164,7 +164,7 @@ def cmd_bank(args) -> int:
             return 0
         print(f"题库共 {bank.stats()['entries']} 条，其中 {len(found)} 条是旧版本留下的无效条目：")
         for entry in found[:50]:
-            reason = "图片题无指纹" if not any(not (o or "").strip() for o in entry.options) else "选项有空项"
+            reason = bank.stale_reason(entry) or "未知"
             print(f"  - [{reason}] {entry.question[:60]}  ({entry.updated or '未知时间'})")
         if len(found) > 50:
             print(f"  ... 另有 {len(found) - 50} 条")

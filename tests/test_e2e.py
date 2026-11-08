@@ -66,6 +66,8 @@ class MockLLM(BaseHTTPRequestHandler):
             answer = {"answer": ["A", "C"], "answers": [], "confidence": 0.9, "need_search": False, "reason": "多选"}
         elif "判断" in question:
             answer = {"answer": ["A"], "answers": [], "confidence": 0.9, "need_search": False, "reason": "判断"}
+        elif "程序输出" in question:
+            answer = {"answer": [], "answers": ["2#3#5#7#"], "confidence": 0.9, "need_search": False}
         elif "填空" in question:
             answer = {"answer": [], "answers": ["北京", "上海"], "confidence": 0.9, "need_search": False}
         elif "无选项" in question:
@@ -510,6 +512,22 @@ class EndToEndTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_completion_answer_with_separator(self):
+        """填空答案本身含 # 时改发 JSON 数组，OCS 才不会把它切成空格分隔。"""
+        first = self.ask("这道程序输出题", "", "completion")
+        self.assertEqual(first.code, 1, first.msg)
+        self.assertEqual(first.answer, '["2#3#5#7#"]')
+        self.assertEqual(first.labels, "2#3#5#7#")
+
+        # 重启后仍要命中，而且返回同样的形式
+        bank2 = Bank(self.cfg.bank_dir, self.cfg.bank_file)
+        bank2.load()
+        again = Solver(self.cfg, bank2).solve(
+            SearchRequest(title="这道程序输出题", options="", qtype="completion")
+        )
+        self.assertTrue(again.cached)
+        self.assertEqual(again.answer, '["2#3#5#7#"]')
 
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)

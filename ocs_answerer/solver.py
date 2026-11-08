@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -71,6 +72,9 @@ _TIME_HINTS = (
     "新闻", "时事", "热点", "刚刚", "截至", "统计数据",
 )
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}\s*年")
+
+# OCS splitAnswer 默认使用的答案分隔符，答案里出现这些字符时必须改用 JSON 数组
+_OCS_SEPARATORS = ("===", "#", "---", "|", ";", "；")
 
 # 选项本身是图片时的特征：占位符、data URL、图片链接、空选项
 _IMAGE_OPTION_RE = re.compile(
@@ -520,6 +524,24 @@ class Solver:
 
     # -- 答案解析 -----------------------------------------------------------
 
+    @staticmethod
+    def _format_answer(parts: list[str]) -> str:
+        """按 OCS 能正确解析的形式拼答案。
+
+        OCS 的 splitAnswer 会按 `#` / `|` / `;` / `---` 等切分答案，
+        答案里本身带这些字符时（比如程序输出 `2#3#5#7#`）改成 JSON 数组，
+        splitAnswer 会先尝试 JSON.parse，从而原样保留内容。
+        """
+        parts = [part for part in parts if part != ""]
+        if not parts:
+            return ""
+        has_separator = any(
+            token in part for part in parts for token in _OCS_SEPARATORS
+        )
+        if not has_separator:
+            return parts[0] if len(parts) == 1 else "#".join(parts)
+        return json.dumps(parts, ensure_ascii=False)
+
     def _resolve(self, result: dict[str, Any], options, qtype: str) -> tuple[str, str]:
         """把模型输出映射回 OCS 需要的答案字符串。返回 (字母, 答案文本)。"""
         raw_answer = result.get("answer")
@@ -532,8 +554,8 @@ class Solver:
             texts = [str(t).strip() for t in texts if str(t).strip()]
             if not texts and tokens:
                 texts = [str(t) for t in tokens]
-            joined = "#".join(texts)
-            return joined, joined
+            display = "#".join(texts)
+            return display, self._format_answer(texts)
 
         if qtype == "completion":
             texts = result.get("answers") or []
@@ -542,8 +564,8 @@ class Solver:
             texts = [str(t).strip() for t in texts if str(t).strip()]
             if not texts:
                 texts = [str(t) for t in tokens]
-            joined = "#".join(texts)
-            return joined, joined
+            display = "#".join(texts)
+            return display, self._format_answer(texts)
 
         picked: list[tuple[str, str]] = []
         # 判断题先按「对/错」语义判断，避免 "不对" 被 "对" 误吞
@@ -568,7 +590,7 @@ class Solver:
             label, raw = picked[0]
             if image_mode:
                 return label, label
-            return label, raw
+            return label, self._format_answer([raw])
 
         # 多选：按选项顺序输出，用 OCS 的分隔符 #
         order = {opt.label: index for index, opt in enumerate(options)}
@@ -576,8 +598,7 @@ class Solver:
         labels = "#".join(label for label, _ in picked)
         if image_mode:
             return labels, labels
-        text = "#".join(raw for _, raw in picked)
-        return labels, text
+        return labels, self._format_answer([raw for _, raw in picked])
 
     @staticmethod
     def _has_image_options(options) -> bool:

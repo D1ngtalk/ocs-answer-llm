@@ -93,6 +93,8 @@ class BankEntry:
     file: str = ""
     # 题干只有 [图片N] 占位符时，把图片指纹并入缓存键
     image_hash: str = ""
+    # md 里是否显式写了「答案内容」（填空题必须写，否则重载后无法区分答案里是不是含分隔符）
+    answer_text_set: bool = False
 
     def option_objects(self):
         return parse_options("\n".join(self.options))
@@ -107,7 +109,8 @@ class BankEntry:
                 lines.append(f"  - {_one_line(opt)}")
         lines.append(f"- 答案: {self.answer_labels or self.answer_text}")
         derived = self.derive_answer_text()
-        if self.answer_text and self.answer_text != derived:
+        # 填空题没有选项可还原，必须把答案原文写进 md；其它题型只在无法还原时才写
+        if self.answer_text and (self.qtype == "completion" or self.answer_text != derived):
             lines.append(f"- 答案内容: {_one_line(self.answer_text)}")
         if self.explain:
             lines.append(f"- 解析: {_one_line(self.explain)}")
@@ -123,7 +126,8 @@ class BankEntry:
             return self.answer_text
         options = self.option_objects()
         if not options:
-            return self.answer_text
+            # 填空题没有选项，答案本身就是文本（`- 答案: xxx`）
+            return self.answer_labels
         if not re.fullmatch(r"[A-Za-z#\s]+", self.answer_labels):
             # 不是字母答案（例如填空题文本），直接返回
             return self.answer_labels
@@ -303,6 +307,7 @@ class Bank:
             updated=fields.get("updated", ""),
             file=str(path),
             image_hash=fields.get("image_hash", ""),
+            answer_text_set="answer_text" in fields,
         )
         if not entry.answer_labels and entry.answer_text:
             entry.answer_labels = entry.answer_text
@@ -364,15 +369,23 @@ class Bank:
         return None, 0.0
 
     @staticmethod
-    def _is_stale(entry: BankEntry) -> bool:
-        """旧版本留下的不可靠条目，命中它们只会给错答案，直接跳过。
-
-        1. 题干含 [图片N] 却没有图片指纹 —— 同套话的图片题会互相串；
-        2. 选项里有空项 —— 说明保存时选项列表被空行顶偏了，字母答案整体错一位。
-        """
+    def stale_reason(entry: BankEntry) -> str:
+        """判断条目是否不可靠，返回原因（空字符串表示正常）。"""
         if _PLACEHOLDER_RE.search(entry.question) and not entry.image_hash:
-            return True
-        return any(not (option or "").strip() for option in entry.options)
+            return "图片题无指纹"
+        if any(not (option or "").strip() for option in entry.options):
+            return "选项有空项"
+        # 旧版填空题没存「答案内容」，答案里带 # / | / ; 时无法判断是几个空，
+        # 直接放过会填错（# 被当分隔符），这里让它重新作答并存成可解析的形式
+        if entry.qtype == "completion" and not entry.answer_text_set:
+            text = entry.answer_labels or ""
+            if any(token in text for token in ("#", "|", ";", "；")):
+                return "填空题答案含分隔符"
+        return ""
+
+    @classmethod
+    def _is_stale(cls, entry: BankEntry) -> bool:
+        return bool(cls.stale_reason(entry))
 
     @staticmethod
     def _type_ok(entry: BankEntry, qtype: str) -> bool:
@@ -417,6 +430,7 @@ class Bank:
                 target.options = entry.options or target.options
                 target.answer_labels = entry.answer_labels
                 target.answer_text = entry.answer_text
+                target.answer_text_set = True
                 target.explain = entry.explain or target.explain
                 target.source = entry.source
                 target.updated = entry.updated
