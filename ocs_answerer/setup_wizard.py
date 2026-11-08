@@ -327,8 +327,8 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _display_width(text))
 
 
-def _print_menu(echo: Echo, defaults: dict[str, dict[str, Any]]) -> None:
-    echo("请选择模型服务商（输入序号，直接回车使用 1）：")
+def _print_menu(echo: Echo, defaults: dict[str, dict[str, Any]], default_index: int = 1) -> None:
+    echo(f"请选择模型服务商（输入序号，直接回车使用 {default_index}）：")
     echo("")
     for index, (name, label, note, _url) in enumerate(PROVIDER_CATALOG, start=1):
         model = str(defaults.get(name, {}).get("model") or ("自定义" if name == "custom" else ""))
@@ -344,10 +344,10 @@ def _ask_choice(
     ask: Ask, echo: Echo, defaults: dict[str, dict[str, Any]], default_name: str = "deepseek"
 ) -> tuple[str, str, str]:
     """返回 (provider 名, 显示名, 申请密钥地址)。"""
-    _print_menu(echo, defaults)
     total = len(PROVIDER_CATALOG)
     names = [name for name, *_ in PROVIDER_CATALOG]
     default_index = names.index(default_name) + 1 if default_name in names else 1
+    _print_menu(echo, defaults, default_index)
     while True:
         raw = ask(f"服务商序号 [{default_index}]：").strip()
         if not raw:
