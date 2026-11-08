@@ -31,9 +31,15 @@ OCS 单次题库请求的超时是 **60 秒**，程序内置 55 秒总预算，�
 
 ## 快速开始
 
-### 1. 填 API Key
+### 1. 准备配置并填 API Key
 
-打开 `config.toml`，找到 `[llm]`：
+`config.toml` 里放的是你自己的 Key，已在 `.gitignore` 中，不会被提交。第一次使用先复制模板：
+
+```bash
+cp config.example.toml config.toml          # Windows: copy config.example.toml config.toml
+```
+
+然后打开 `config.toml`，找到 `[llm]`：
 
 ```toml
 [llm]
