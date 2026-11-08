@@ -20,6 +20,7 @@ from .normalize import (
     format_options_for_prompt,
     normalize_option,
     normalize_question,
+    ocs_similar_options,
     parse_options,
 )
 from .vision import ImagePart, collect_images, extract_image_sources, images_fingerprint, split_sources
@@ -228,7 +229,13 @@ class Solver:
             return Answer(
                 code=1,
                 question=display,
-                answer=entry.answer_text,
+                answer=self._wire_answer(
+                    entry.answer_labels,
+                    entry.answer_text,
+                    current_options=options,
+                    qtype=entry.qtype or request.qtype,
+                    source_options=entry.option_objects(),
+                ),
                 labels=entry.answer_labels,
                 qtype=entry.qtype or request.qtype,
                 source="cache",
@@ -251,7 +258,13 @@ class Solver:
                 return Answer(
                     code=1,
                     question=display,
-                    answer=entry.answer_text,
+                    answer=self._wire_answer(
+                        entry.answer_labels,
+                        entry.answer_text,
+                        current_options=options,
+                        qtype=entry.qtype or request.qtype,
+                        source_options=entry.option_objects(),
+                    ),
                     labels=entry.answer_labels,
                     qtype=entry.qtype or request.qtype,
                     source="cache",
@@ -399,7 +412,9 @@ class Solver:
         return Answer(
             code=1,
             question=display,
-            answer=answer_text,
+            answer=self._wire_answer(
+                labels, answer_text, current_options=options, qtype=qtype
+            ),
             labels=labels,
             qtype=qtype,
             source=source,
@@ -564,6 +579,61 @@ class Solver:
             if flag:
                 letters.append(label)
         return sorted(set(letters))
+
+    def _wire_answer(
+        self,
+        labels: str,
+        text: str,
+        *,
+        current_options,
+        qtype: str,
+        source_options=None,
+    ) -> str:
+        """决定真正回传 OCS 的答案形式（文字 / 字母）。
+
+        OCS 5.x 的多选在匹配后会跑一步「领先度消歧」：两个选项文本相似度 > 0.6 时，
+        它认为是一字之差的干扰项，只保留一个。像
+        「低层次的信念服从高层次的信念」与「高层次的信念决定低层次的信念」（相似度 0.77）
+        这种都正确的题，就会被它自己删掉一个。
+
+        检测到这种情况时改回传**字母**（如 B#C），OCS 会走纯 ABCD 兜底，不经过消歧。
+        字母按**当前题面的选项顺序**重新映射，所以题库里存的文字答案在选项顺序变化后依然正确。
+        """
+        if qtype != "multiple" or not text or text == labels:
+            return text
+        parts = [part.strip() for part in (labels or "").split("#") if part.strip()]
+        if len(parts) < 2 or not all(re.fullmatch(r"[A-Z]", part) for part in parts):
+            return text
+        source = list(source_options if source_options is not None else current_options or [])
+        if not source:
+            return text
+
+        selected: list[str] = []
+        for label in parts:
+            option = next((opt for opt in source if opt.label == label), None)
+            if option is None:
+                return text
+            selected.append(option.text or option.raw)
+        if len(selected) < 2 or not ocs_similar_options(selected):
+            return text
+
+        mapped: list[str] = []
+        for selected_text in selected:
+            key = normalize_option(selected_text)
+            match = next(
+                (
+                    opt
+                    for opt in (current_options or [])
+                    if normalize_option(opt.text or opt.raw) == key
+                ),
+                None,
+            )
+            if match is None:
+                return text
+            mapped.append(match.label)
+        wire = "#".join(sorted(set(mapped), key=mapped.index))
+        log.info("选中项文本过于相似，改用字母回传：%s（避免 OCS 多选消歧漏选）", wire)
+        return wire
 
     def _resolve(self, result: dict[str, Any], options, qtype: str) -> tuple[str, str]:
         """把模型输出映射回 OCS 需要的答案字符串。返回 (字母, 答案文本)。"""

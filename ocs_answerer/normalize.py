@@ -94,6 +94,67 @@ def normalize_option(option: str) -> str:
     return _KEEP_RE.sub("", _WS_RE.sub("", strip_option_label(option).lower()))
 
 
+# ---------------------------------------------------------------------------
+# 复刻 OCS 的文本归一化，用来预判 OCS 的多选「领先度消歧」
+# ---------------------------------------------------------------------------
+
+# OCS normalizeString：先去掉中英文标点与空白，全角转半角，再只保留中英文/数字
+_OCS_PUNCT_CN_RE = re.compile(r"[，。！？；：\"'、（）【】《》\s]")
+_OCS_PUNCT_EN_RE = re.compile(r"[,.\-!?;:'\"()\[\]<>]")
+_OCS_FULLWIDTH_RE = re.compile(r"[ａ-ｚＡ-Ｚ０-９]")
+_OCS_KEEP_RE = re.compile(r"[^\u2e80-\u9fffa-z0-9①-⑨]")
+
+
+def ocs_similarity_key(text: str) -> str:
+    """对齐 OCS 5.x 的 ``normalizeString(removeRedundant(x))``。
+
+    只用于预判 OCS 的匹配行为，不参与题库 key 计算。
+    """
+    text = strip_option_label(text)
+    text = _OCS_PUNCT_CN_RE.sub("", text)
+    text = _OCS_PUNCT_EN_RE.sub("", text)
+    text = _OCS_FULLWIDTH_RE.sub(lambda m: chr(ord(m.group(0)) - 0xFEE0), text)
+    text = text.lower().replace("％", "%")
+    return _OCS_KEEP_RE.sub("", text)
+
+
+def dice_similarity(left: str, right: str) -> float:
+    """string-similarity 用的 Dice 系数（二元组），与 OCS 依赖的实现一致。"""
+    if left == right:
+        return 1.0
+    if len(left) < 2 or len(right) < 2:
+        return 0.0
+    bigrams: dict[str, int] = {}
+    for index in range(len(left) - 1):
+        gram = left[index:index + 2]
+        bigrams[gram] = bigrams.get(gram, 0) + 1
+    hits = 0
+    for index in range(len(right) - 1):
+        gram = right[index:index + 2]
+        count = bigrams.get(gram, 0)
+        if count:
+            bigrams[gram] = count - 1
+            hits += 1
+    return 2.0 * hits / (len(left) + len(right) - 2)
+
+
+def ocs_similar_options(texts: list[str], threshold: float = 0.6) -> bool:
+    """任意两个选项是否「过于相似」，会被 OCS 5.x 的领先度消歧删掉一个。
+
+    源码：packages/core/src/core/worker/resolvers/multiple.ts 的
+    ``disambiguateSimilarOptions(options, ratings, threshold = 0.6)``。
+    多选时它会把文本相似度大于阈值的两个选项当作「一字之差的干扰项」，
+    只保留匹配度更高的那个 —— 如果两个都是正确答案，就会漏选。
+    """
+    keys = [ocs_similarity_key(text) for text in texts]
+    keys = [key for key in keys if key]
+    for index, left in enumerate(keys):
+        for right in keys[index + 1:]:
+            if dice_similarity(left, right) > threshold:
+                return True
+    return False
+
+
 @dataclass
 class Option:
     """一个选项。raw 是 OCS 传过来的原始文本，回传答案时必须原样返回。"""

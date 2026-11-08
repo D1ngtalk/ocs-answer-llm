@@ -62,6 +62,12 @@ class MockLLM(BaseHTTPRequestHandler):
             )
             return self._send(body)
 
+        if "选项很像" in question:
+            # 两个正确答案文本高度相似（会被 OCS 的领先度消歧误删一个）
+            answer = {"checks": {"A": False, "B": True, "C": True, "D": False},
+                      "answer": ["B", "C"], "answers": [], "confidence": 0.9, "need_search": False}
+            return self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
+
         if "多选" in question:
             answer = {"answer": ["A", "C"], "answers": [], "confidence": 0.9, "need_search": False, "reason": "多选"}
         elif "判断" in question:
@@ -545,6 +551,49 @@ class EndToEndTest(unittest.TestCase):
         )
         self.assertTrue(again.cached)
         self.assertEqual(again.answer, '["2#3#5#7#"]')
+
+    def test_similar_multiple_options_use_letters(self):
+        """两个正确选项文本太像时，OCS 5.x 会消歧掉一个，必须改回传字母。"""
+        options = (
+            "低层次的信念决定高层次的信念\n"
+            "低层次的信念服从高层次的信念\n"
+            "高层次的信念决定低层次的信念\n"
+            "高层次的信念服从低层次的信念"
+        )
+        first = self.ask("这道题的选项很像", options, "multiple")
+        self.assertEqual(first.code, 1, first.msg)
+        self.assertEqual(first.labels, "B#C")
+        self.assertEqual(first.answer, "B#C", "文字答案会被 OCS 去重，应改用字母")
+
+        # 题库里仍然保存可读的文字答案，下次命中时再换算成字母
+        entry, _ = self.bank.lookup("这道题的选项很像", options.split("\n"), qtype="multiple")
+        self.assertIsNotNone(entry)
+        self.assertIn("#", entry.answer_text)
+        self.assertNotEqual(entry.answer_text, "B#C")
+
+        # 重启后命中缓存，依然返回字母
+        bank2 = Bank(self.cfg.bank_dir, self.cfg.bank_file)
+        bank2.load()
+        again = Solver(self.cfg, bank2).solve(
+            SearchRequest(title="这道题的选项很像", options=options, qtype="multiple")
+        )
+        self.assertTrue(again.cached)
+        self.assertEqual(again.answer, "B#C")
+
+        # 选项顺序变了（B/C 互换），字母要跟着当前顺序重新映射
+        shuffled = options.split("\n")
+        shuffled[1], shuffled[2] = shuffled[2], shuffled[1]
+        third = Solver(self.cfg, bank2).solve(
+            SearchRequest(title="这道题的选项很像", options="\n".join(shuffled), qtype="multiple")
+        )
+        self.assertTrue(third.cached)
+        self.assertEqual(third.answer, "C#B")
+
+    def test_dissimilar_multiple_options_keep_text(self):
+        """普通多选仍回传选项原文（可读、且不受选项顺序影响）。"""
+        answer = self.ask("这是一道多选", "A. 甲\nB. 乙\nC. 丙\nD. 丁", "multiple")
+        self.assertEqual(answer.labels, "A#C")
+        self.assertEqual(answer.answer, "A. 甲#C. 丙")
 
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)

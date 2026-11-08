@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """兼容性测试：把 OCS 的答案匹配算法移植成 Python，验证本程序输出的答案格式。
 
-对应源码（4.0 分支）：
+对应源码（5.0 分支，4.x 的匹配逻辑是它的子集）：
 * packages/core/src/core/worker/utils.ts            —— splitAnswer
 * packages/core/src/core/utils/string.ts             —— removeRedundant / normalizeString / answerNormalizedMatch
 * packages/core/src/core/worker/resolvers/*.ts       —— single / multiple / judgement / completion
@@ -145,18 +145,74 @@ def resolve_single(answers: list[str], options: list[str]) -> str | None:
     return None
 
 
+def disambiguate_similar_options(options: list[str], ratings: list[float], threshold: float = 0.6) -> list[str]:
+    """对应 5.0 的 disambiguateSimilarOptions：文本太像的选项只留匹配度更高的那个。"""
+    if len(options) <= 1:
+        return options
+    normalized = [normalize_string(remove_redundant(option)) for option in options]
+    eliminated: set[int] = set()
+    for i in range(len(options)):
+        if i in eliminated:
+            continue
+        for j in range(i + 1, len(options)):
+            if j in eliminated:
+                continue
+            if _dice(normalized[i], normalized[j]) > threshold:
+                if ratings[i] >= ratings[j]:
+                    eliminated.add(j)
+                else:
+                    eliminated.add(i)
+                    break
+    return [option for index, option in enumerate(options) if index not in eliminated]
+
+
 def resolve_multiple(answers: list[str], options: list[str]) -> list[str] | None:
+    """对齐 5.0 的 resolveMultiple：归一化匹配 → 相似匹配 → 领先度消歧 → 纯字母兜底。"""
     option_strings = [remove_redundant(option) for option in options]
+    groups: list[list[str]] = []
     for answer in answers:
         parts = split_answer(answer)
-        matched = answer_normalized_match(parts, option_strings)
-        if matched:
-            result = []
-            for option in matched:
-                index = option_strings.index(option)
-                result.append(options[index])
-            return result
 
+        # 阶段1：归一化匹配（答案⊇选项）
+        normalized = answer_normalized_match(parts, option_strings)
+        group: list[str] = []
+        ratings: list[float] = []
+        for option in normalized:
+            index = option_strings.index(option)
+            matched = next(
+                (
+                    part
+                    for part in parts
+                    if normalize_string(remove_redundant(option)) in normalize_string(remove_redundant(part))
+                ),
+                None,
+            )
+            if matched is None:
+                continue
+            equal = normalize_string(remove_redundant(matched)) == normalize_string(remove_redundant(option))
+            group.append(options[index])
+            ratings.append(1.0 if equal else 0.8)
+        kept = disambiguate_similar_options(group, ratings)
+        kept_ratings = [ratings[group.index(item)] for item in kept]
+
+        # 阶段2：相似度匹配
+        similar_group: list[str] = []
+        similar_ratings: list[float] = []
+        for index, rating in enumerate(answer_similar(parts, option_strings)):
+            if rating > 0.6:
+                similar_group.append(options[index])
+                similar_ratings.append(rating)
+        similar_kept = disambiguate_similar_options(similar_group, similar_ratings)
+
+        best = kept if len(kept) * 100 + sum(kept_ratings) >= len(similar_kept) * 100 else similar_kept
+        if best:
+            groups.append(best)
+
+    if groups:
+        groups.sort(key=len, reverse=True)
+        return groups[0]
+
+    # 纯 ABCD 兜底（不经过消歧）
     plain: list[str] = []
     for answer in answers:
         compact = re.sub(r"[,，.。．、 #]", "", answer).strip()
@@ -165,7 +221,7 @@ def resolve_multiple(answers: list[str], options: list[str]) -> list[str] | None
                 index = ord(char.upper()) - 65
                 if 0 <= index < len(options):
                     plain.append(options[index])
-    return plain or None
+    return list(dict.fromkeys(plain)) or None
 
 
 CORRECT_WORDS = ["是", "对", "正确", "确定", "√", "对的", "是的", "正确的", "true", "t", "yes", "1"]
@@ -232,6 +288,31 @@ class OCSCompatTest(unittest.TestCase):
     def test_multiple_plain_letters(self):
         options = parse_options("A. 甲\nB. 乙\nC. 丙")
         self.assertEqual(resolve_multiple(["AC"], [o.raw for o in options]), ["A. 甲", "C. 丙"])
+
+    def test_multiple_similar_options_would_be_deduped(self):
+        """OCS 5.0 的「领先度消歧」会把相似的正确选项删掉一个（用户遇到的现象）。"""
+        options = parse_options(
+            "低层次的信念决定高层次的信念\n低层次的信念服从高层次的信念\n"
+            "高层次的信念决定低层次的信念\n高层次的信念服从低层次的信念"
+        )
+        texts = [o.raw for o in options]
+        picked = resolve_multiple(
+            ["低层次的信念服从高层次的信念#高层次的信念决定低层次的信念"], texts
+        )
+        self.assertEqual(picked, [texts[1]], "回传文字时 OCS 只会选中一个")
+
+    def test_multiple_similar_options_by_letters(self):
+        """改成字母后会走纯 ABCD 兜底，不经过消歧，两个都能选中。"""
+        options = parse_options(
+            "低层次的信念决定高层次的信念\n低层次的信念服从高层次的信念\n"
+            "高层次的信念决定低层次的信念\n高层次的信念服从低层次的信念"
+        )
+        texts = [o.raw for o in options]
+        self.assertEqual(resolve_multiple(["B#C"], texts), [texts[1], texts[2]])
+        self.assertEqual(resolve_multiple(["BC"], texts), [texts[1], texts[2]])
+        # 选项顺序变化时，字母跟着当前顺序走，仍然是这两项（顺序按答案里的字母）
+        shuffled = [texts[0], texts[2], texts[1], texts[3]]
+        self.assertEqual(resolve_multiple(["C#B"], shuffled), [shuffled[2], shuffled[1]])
 
     def test_judgement(self):
         options = parse_options("A. 正确\nB. 错误")
