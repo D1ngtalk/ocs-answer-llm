@@ -246,5 +246,55 @@ class OCSCompatTest(unittest.TestCase):
         self.assertEqual(resolve_single(["4"], [o.raw for o in options]), "C. 4")
 
 
+class ImageOptimizeCompatTest(unittest.TestCase):
+    """对应 OCS 5.x 的 isAnswererWrapperSupportImageOptimize()。
+
+    只有 POST + 配置里实际引用图片题字段，脚本才不会弹
+    「当前题库配置暂不支持图片、公式等题目处理」。
+    """
+
+    PLACEHOLDERS = ("${images}", "${suggestion_title}", "${suggestion_options}")
+    ENV_REF = re.compile(r"(^|[^\w$])(images|suggestion_title|suggestion_options)(?![\w$])")
+
+    @classmethod
+    def supports(cls, wrapper: dict) -> bool:
+        if str(wrapper.get("method") or "get").lower() != "post":
+            return False
+        for value in (wrapper.get("data") or {}).values():
+            if isinstance(value, str):
+                if any(placeholder in value for placeholder in cls.PLACEHOLDERS):
+                    return True
+            elif isinstance(value, dict) and isinstance(value.get("handler"), str):
+                if cls.ENV_REF.search(value["handler"]):
+                    return True
+        return False
+
+    def test_generated_config_is_recognized(self):
+        from ocs_answerer.server import build_ocs_config
+
+        wrapper = build_ocs_config("http://127.0.0.1:8000")[0]
+        self.assertTrue(self.supports(wrapper), "生成的配置应被 OCS 判定为支持图片题优化")
+
+    def test_old_config_is_not_recognized(self):
+        """1.0 版本的配置（只读 title/options、DOM 抓图）确实会被判定为不支持。"""
+        old = {
+            "method": "post",
+            "data": {
+                "title": "${title}",
+                "type": "${type}",
+                "options": "${options}",
+                "image": {"handler": "return (env) => { const urls = []; return urls.join(','); }"},
+            },
+        }
+        self.assertFalse(self.supports(old))
+
+    def test_get_method_is_not_supported(self):
+        from ocs_answerer.server import build_ocs_config
+
+        wrapper = build_ocs_config("http://127.0.0.1:8000")[0]
+        wrapper["method"] = "get"
+        self.assertFalse(self.supports(wrapper))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

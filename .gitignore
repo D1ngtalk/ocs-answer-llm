@@ -11,3 +11,4 @@ data/bank/*.md
 !data/bank/.gitkeep
 ocs-config.local.json
 *.tmp
+.workbuddy/memory/2026-11-08.md

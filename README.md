@@ -45,6 +45,8 @@ api_key = "sk-你的密钥"       # 填这里
 
 > 换别家只需改 `provider`，再填对应小节里的 `api_key`。配置里已经预置了 7 家服务商的地址和默认模型。
 
+> 要求 OCS **4.7.21 及以上**（题库配置支持自定义字段 handler），图片题优化需要 5.x。
+
 ### 2. 启动
 
 Windows 双击 `start.bat`，或者命令行：
@@ -93,20 +95,23 @@ python main.py config
     "type": "GM_xmlhttpRequest",
     "headers": { "Content-Type": "application/json" },
     "data": {
-      "title": "${title}",
+      "title": { "handler": "return (env) => (env.suggestion_title || env.title || '')" },
+      "options": { "handler": "return (env) => (env.suggestion_options || env.options || '')" },
       "type": "${type}",
-      "options": "${options}",
-      "image": { "handler": "return (env) => { ... }" }
+      "images": { "handler": "return (env) => ..." }
     },
     "handler": "return (res) => (res && res.code === 1 && res.answer) ? [res.question, res.answer] : undefined"
   }
 ]
 ```
 
-两个要点：
+三个要点：
 
 - `type` 必须是 `GM_xmlhttpRequest`。课程页面通常是 https，直接 `fetch` 本地 http 会被浏览器的混合内容策略拦截。
-- 如果脚本提示域名未授权，把脚本管理器里的 `@connect` 设为**宽松模式**，或使用 OCS 的[全域名通用版脚本](https://docs.ocsjs.com/docs/other/api#common-version)。
+- **`data` 里必须真的引用图片题字段**（`${images}` / `${suggestion_title}` / `${suggestion_options}`，或 handler 里读 `env.images`），否则 OCS 会提示「当前题库配置暂不支持图片、公式等题目处理」。OCS 的判定逻辑是扫 `data` 的值，只看有没有引用，不看实际效果。
+- `title` / `options` 用 handler 而不是 `${title}`，是为了兼容没开图片题优化的场景：OCS 5.x 只在有图片时注入 `suggestion_*`，其它时候回退到原始 `title` / `options`。
+
+如果脚本提示域名未授权，把脚本管理器里的 `@connect` 设为**宽松模式**，或使用 OCS 的[全域名通用版脚本](https://docs.ocsjs.com/docs/other/api#common-version)。
 
 ---
 
@@ -159,18 +164,21 @@ model = "qwen-vl-max"
 
 程序从三个地方找图片：
 
-1. OCS 传来的 `image` 字段（默认配置里的 JS handler 会从题干区域抓 `<img>`）；
-2. 题干 / 选项文本里的图片链接（`http(s)://...png`、`<img src="...">`、`data:image/...`）；
-3. 手动调接口时传的 `image` 参数。
+1. **OCS 5.x 图片题优化**：`env.images`（题干和选项里的图片，已由脚本转成 base64），对应题干里的 `[图片1]`、`[图片2]` 占位符。这条路最稳，不受防盗链和跨域影响；
+2. **老版本 / 未开图片题优化**：默认 `images` handler 会退回 DOM 抓取题干区域的 `<img>`，把地址交给本地服务下载；
+3. **文本里的图片链接**：`http(s)://...png`、`<img src="...">`、`data:image/...`，以及手动调接口时传的 `images` 参数。
 
-抓到的图片会下载、base64 编码后随题目一起发给视觉模型。默认最多 3 张、单张 8MB，GIF 会跳过（多数视觉模型不支持）。
+抓到的图片会随题目一起发给视觉模型。默认单题最多 5 张、单张 8MB，GIF 会跳过（多数视觉模型不支持）。
 
-如果目标平台的图片选择器不在默认列表里，改 OCS 配置里的 `image` handler 即可：
+发给模型的题干里 `[图片1]`、`[图片2]` 与图片顺序严格对应，提示词里也会说明这一点。
+
+如果目标平台的图片不在默认选择器范围内（路径 2），改 OCS 配置里 `images` handler 的后半段即可：
 
 ```js
 return (env) => {
+  if (env.images && env.images.length) return env.images;   // 保留这行，OCS 才认为配置支持图片
   const urls = [...document.querySelectorAll('.你的题干容器 img')].map(i => i.src);
-  return urls.slice(0, 3).join(',');
+  return urls.slice(0, 5);
 }
 ```
 
@@ -215,22 +223,26 @@ return (env) => {
 - 填空题的「答案」直接写文本，多个空用 `#` 分隔；
 - `- 答案内容:` 可选，是回传 OCS 的完整选项文本，一般不写，程序会自己还原。
 
-手工加题只要三行也认：
+手工加题只要三四行也认：
 
 ```markdown
 ## 1+1=?
 
+- 类型: single
 - 答案: B
 - 选项:
   - A. 1
   - B. 2
 ```
 
+`- 类型:` 建议写上（`single` / `multiple` / `judgement` / `completion`）。不写表示「不限题型」，可能被其它题型命中。
+
 ### 匹配规则
 
 1. 题干归一化后精确匹配（去掉【单选题】、题号、标点、空格、全半角差异）；
 2. 没命中就走模糊匹配（`bank.fuzzy_threshold`，默认 0.92）；
-3. 命中后还会校验选项：**同题干但选项对不上时不会复用旧答案**，而是重新问模型（考试题库里同题干换选项很常见，这条能避免大量错答）。
+3. **题型必须一致**：单选题、多选题、判断题、填空题各自独立缓存。同一道题在不同题型下答案可能完全不同，多选绝不会复用单选的答案；
+4. 命中后还会校验选项：**同题干但选项对不上时不会复用旧答案**，而是重新问模型（考试题库里同题干换选项很常见，这条能避免大量错答）。
 
 缓存命中时返回是毫秒级的，OCS 那边几乎无感。
 
@@ -301,6 +313,12 @@ curl "http://127.0.0.1:8000/api/search?title=1%2B1%3D%3F&options=A.%201%0AB.%202
 
 **Q：脚本提示域名未授权 / 请求被拦截。**
 把油猴 `@connect` 设为宽松模式，或换全域名通用版脚本。`type` 一定要是 `GM_xmlhttpRequest`。
+
+**Q：OCS 提示「当前题库配置暂不支持图片、公式等题目处理」。**
+说明配的题库配置没有引用图片题字段。OCS 只做静态检测：`method` 必须是 `post`，且 `data` 里要出现 `${images}` / `${suggestion_title}` / `${suggestion_options}` 这三个占位符，或者某个字段的 handler 源码里出现 `env.images` 这类引用。用状态页 / `python main.py config` **重新复制一份配置**即可（本程序 1.1 起已按新协议生成）。
+
+**Q：多选题答成了单选题的答案。**
+1.1 起题库按「题干 + 题型 + 选项」三重校验，不会再跨题型复用。若仍出现，检查 `data/bank/*.md` 里那条记录是不是手工写的、且没写 `- 类型:`；补上题型即可。
 
 **Q：一直返回 code 0，日志里是 401 / 403。**
 Key 不对或没充值。跑 `python main.py check` 看具体报错。

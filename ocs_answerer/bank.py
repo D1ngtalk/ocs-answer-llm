@@ -69,7 +69,7 @@ HEADER = """# OCS 本地题库
 class BankEntry:
     key: str
     question: str
-    qtype: str = "single"
+    qtype: str = ""
     options: list[str] = field(default_factory=list)
     answer_labels: str = ""
     answer_text: str = ""
@@ -83,7 +83,8 @@ class BankEntry:
 
     def to_markdown(self) -> str:
         lines: list[str] = [f"## {_one_line(self.question)}", ""]
-        lines.append(f"- 类型: {self.qtype or 'single'}")
+        if self.qtype:
+            lines.append(f"- 类型: {self.qtype}")
         if self.options:
             lines.append("- 选项:")
             for opt in self.options:
@@ -267,7 +268,7 @@ class Bank:
         entry = BankEntry(
             key=normalize_question(question),
             question=question,
-            qtype=fields.get("type", "single") or "single",
+            qtype=fields.get("type", ""),
             options=options,
             answer_labels=fields.get("answer", ""),
             answer_text=fields.get("answer_text", ""),
@@ -287,9 +288,13 @@ class Bank:
     # -- 查询 ---------------------------------------------------------------
 
     def lookup(
-        self, question: str, options: list[str] | str, *, image_hash: str = ""
+        self, question: str, options: list[str] | str, *, image_hash: str = "", qtype: str = ""
     ) -> tuple[BankEntry | None, float]:
-        """返回 (命中的条目, 匹配分)。未命中时返回 (None, 0)。"""
+        """返回 (命中的条目, 匹配分)。未命中时返回 (None, 0)。
+
+        ``qtype`` 会参与过滤：同一道题在不同平台/题型下答案可能不同，
+        多选绝不能复用单选的缓存。
+        """
         key = normalize_question(question)
         if not key and image_hash:
             key = normalize_question(f"图片题 {image_hash[:12]}")
@@ -301,6 +306,8 @@ class Bank:
             best: BankEntry | None = None
             best_score = 0.0
             for entry in reversed(self._index.get(key, [])):
+                if not self._type_ok(entry, qtype):
+                    continue
                 score = self._score(entry, option_list)
                 if score > best_score:
                     best, best_score = entry, score
@@ -312,6 +319,8 @@ class Bank:
 
             for entry in reversed(self._entries):
                 if entry.key == key:
+                    continue
+                if not self._type_ok(entry, qtype):
                     continue
                 if not self._length_ok(entry.key, key):
                     continue
@@ -327,6 +336,13 @@ class Bank:
             if best is not None and best_score >= self.option_threshold:
                 return best, best_score
         return None, 0.0
+
+    @staticmethod
+    def _type_ok(entry: BankEntry, qtype: str) -> bool:
+        """题型一致才允许命中；任一方未知（手工添加的旧条目）时放行。"""
+        if not qtype or not entry.qtype:
+            return True
+        return entry.qtype == qtype
 
     def _score(self, entry: BankEntry, option_list: list[str]) -> float:
         if not self.verify_options:
@@ -353,6 +369,8 @@ class Bank:
         with self._lock:
             target: BankEntry | None = None
             for existing in self._index.get(entry.key, []):
+                if not self._type_ok(existing, entry.qtype):
+                    continue
                 if options_similarity(existing.options, entry.options) >= 0.9:
                     target = existing
                     break

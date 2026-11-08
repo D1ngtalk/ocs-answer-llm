@@ -248,6 +248,36 @@ class EndToEndTest(unittest.TestCase):
         self.assertIsNotNone(entry2)
         self.assertEqual(entry2.answer_text, "A. 对")
 
+    def test_type_isolation(self):
+        """同一题干、同一选项，多选题不能命中单选的缓存。"""
+        options = "A. 甲\nB. 乙\nC. 丙"
+        first = self.ask("这道多选和单选共用题干", options, "single")
+        self.assertEqual(first.code, 1, first.msg)
+        self.assertEqual(first.labels, "A")
+
+        multi = self.ask("这道多选和单选共用题干", options, "multiple")
+        self.assertFalse(multi.cached, "多选题必须重新作答，不能复用单选缓存")
+        self.assertEqual(multi.labels, "A#C")
+
+        again = self.ask("这道多选和单选共用题干", options, "single")
+        self.assertTrue(again.cached)
+        self.assertEqual(again.labels, "A")
+
+        text = (self.bank_dir / "default.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count("## 这道多选和单选共用题干"), 2)
+        self.assertIn("- 类型: single", text)
+        self.assertIn("- 类型: multiple", text)
+
+    def test_image_only_question_key(self):
+        """纯图片题的占位符标题不能变成通用缓存键。"""
+        solver = self.solver
+        self.assertEqual(solver._prepare_question(SearchRequest(title=" [图片1] ")), "")
+        self.assertEqual(solver._prepare_question(SearchRequest(title="[图片1][图片2]")), "")
+        self.assertEqual(
+            solver._prepare_question(SearchRequest(title="如图[图片1]所示，选择正确答案")),
+            "如图[图片1]所示，选择正确答案",
+        )
+
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
         port = server.server_address[1]
@@ -272,6 +302,11 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(configs[0]["method"], "post")
             self.assertIn("handler", configs[0])
             self.assertEqual(configs[0]["type"], "GM_xmlhttpRequest")
+            data = configs[0]["data"]
+            # 必须引用图片题优化的字段，否则 OCS 会提示「暂不支持图片、公式」
+            self.assertIn("suggestion_title", data["title"]["handler"])
+            self.assertIn("suggestion_options", data["options"]["handler"])
+            self.assertIn("env.images", data["images"]["handler"])
         finally:
             server.shutdown()
             server.server_close()

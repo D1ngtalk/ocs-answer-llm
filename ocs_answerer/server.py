@@ -19,6 +19,9 @@ from .solver import Solver, SearchRequest
 log = logging.getLogger("ocs.server")
 
 IMAGE_HANDLER_JS = """return (env) => {
+  // OCS 5.x「图片题优化」会直接把题目图片转成 base64 传进来（env.images）；
+  // 老版本没有这个字段，则退回 DOM 抓取图片地址，由本地服务下载。
+  if (env.images && env.images.length) return env.images;
   const selectors = ['.question img', '.subject img', '.topic img', '.issue img', '.stem img', '.que img', '.title img', '.exam-question img', '.q-body img', '.question-content img'];
   const urls = [];
   for (const sel of selectors) {
@@ -28,8 +31,14 @@ IMAGE_HANDLER_JS = """return (env) => {
       if (!urls.includes(img.src)) urls.push(img.src);
     }
   }
-  return urls.slice(0, 3).join(',');
+  return urls.slice(0, 3);
 }"""
+
+# OCS 5.x 的图片题优化要求 data 中必须实际引用 ${images} / ${suggestion_title} /
+# ${suggestion_options}（或 handler 里读取 env.images 等），否则会提示「暂不支持图片」。
+# 这两个 handler 同时兼顾了老版本：没有 suggestion_* 字段时回退到原始 title / options。
+TITLE_FIELD_JS = "return (env) => (env.suggestion_title || env.title || '')"
+OPTIONS_FIELD_JS = "return (env) => (env.suggestion_options || env.options || '')"
 
 RESPONSE_HANDLER_JS = (
     "return (res) => (res && res.code === 1 && res.answer) "
@@ -72,7 +81,11 @@ COPY_SCRIPT_HTML = """<script>
 
 
 def build_ocs_config(base_url: str) -> list[dict[str, Any]]:
-    """生成可以直接粘贴到 OCS「题库配置」里的 JSON。"""
+    """生成可以直接粘贴到 OCS「题库配置」里的 JSON。
+
+    采用 OCS 5.x 的图片题协议（v2）：标题/选项走 suggestion_* 字段，
+    图片走 env.images，这样脚本不会提示「当前题库配置暂不支持图片、公式等题目处理」。
+    """
     return [
         {
             "name": "本地AI题库",
@@ -83,10 +96,10 @@ def build_ocs_config(base_url: str) -> list[dict[str, Any]]:
             "type": "GM_xmlhttpRequest",
             "headers": {"Content-Type": "application/json"},
             "data": {
-                "title": "${title}",
+                "title": {"handler": TITLE_FIELD_JS},
+                "options": {"handler": OPTIONS_FIELD_JS},
                 "type": "${type}",
-                "options": "${options}",
-                "image": {"handler": IMAGE_HANDLER_JS},
+                "images": {"handler": IMAGE_HANDLER_JS},
             },
             "handler": RESPONSE_HANDLER_JS,
         }

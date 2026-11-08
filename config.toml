@@ -82,7 +82,7 @@ vision_model = "llava"
 [vision]
 provider = ""               # 留空沿用 [llm] 的 provider，推荐单独设为 "qwen"
 model = ""                  # 留空使用该 provider 的 vision_model
-max_images = 3              # 单题最多识别几张图
+max_images = 5              # 单题最多识别几张图（OCS 图片题优化会把题干/选项的图片都传过来）
 max_image_bytes = 8388608   # 单张图上限 8MB
 timeout = 20
 

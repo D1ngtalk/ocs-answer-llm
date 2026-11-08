@@ -76,11 +76,14 @@ def extract_image_sources(*texts: str) -> list[str]:
 
 
 def split_sources(value: str | list[str] | None) -> list[str]:
-    """把 image 参数（可能是逗号/换行分隔的字符串）拆成列表。"""
+    """把 image 参数（可能是逗号/换行分隔的字符串，或 data URL 数组）拆成列表。"""
     if not value:
         return []
     if isinstance(value, list):
         items = [str(v) for v in value]
+    elif str(value).strip().startswith("data:image/"):
+        # data URL 自身含逗号，不能拆分
+        items = [str(value).strip()]
     else:
         items = re.split(r"[,\n\r;]+", str(value))
     bogus = {"", "undefined", "null", "none", "[object object]"}

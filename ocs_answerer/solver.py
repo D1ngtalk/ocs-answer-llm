@@ -183,17 +183,23 @@ class Solver:
             timeout=float(self.cfg.get("vision.timeout", 20)),
         )
         fingerprint = images_fingerprint(images)
+        # 纯图片题没有文字题干，用一个可读的占位名展示
+        display = question or (
+            f"[图片题] {fingerprint[:12]}" if fingerprint else (request.title or "（无题干）")
+        )
 
         # 1) 先查题库
         entry, score = (None, 0.0)
         if use_cache:
-            entry, score = self.bank.lookup(question, option_lines, image_hash=fingerprint)
+            entry, score = self.bank.lookup(
+                question, option_lines, image_hash=fingerprint, qtype=request.qtype
+            )
         if entry is not None and entry.answer_text:
             self._bump("cache_hits")
             log.info("题库命中（%.2f）：%s", score, question[:40])
             return Answer(
                 code=1,
-                question=request.title or question,
+                question=display,
                 answer=entry.answer_text,
                 labels=entry.answer_labels,
                 qtype=entry.qtype or request.qtype,
@@ -208,13 +214,15 @@ class Solver:
         lock_key = normalize_question(question) or f"img:{fingerprint}" or str(id(request))
         with self._lock_for(lock_key):
             if use_cache:
-                entry, score = self.bank.lookup(question, option_lines, image_hash=fingerprint)
+                entry, score = self.bank.lookup(
+                    question, option_lines, image_hash=fingerprint, qtype=request.qtype
+                )
             if entry is not None and entry.answer_text:
                 self._bump("cache_hits")
                 log.info("题库命中（并发合并，%.2f）：%s", score, question[:40])
                 return Answer(
                     code=1,
-                    question=request.title or question,
+                    question=display,
                     answer=entry.answer_text,
                     labels=entry.answer_labels,
                     qtype=entry.qtype or request.qtype,
@@ -228,6 +236,7 @@ class Solver:
                 return self._solve_uncached(
                     request=request,
                     question=question,
+                    display=display,
                     options=options,
                     images=images,
                     started=started,
@@ -237,7 +246,7 @@ class Solver:
                 log.error("答题失败：%s", exc)
                 return Answer(
                     code=0,
-                    question=request.title or question,
+                    question=display,
                     msg=str(exc)[:300],
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                     images=len(images),
@@ -247,7 +256,7 @@ class Solver:
                 log.exception("答题出现未预期错误")
                 return Answer(
                     code=0,
-                    question=request.title or question,
+                    question=display,
                     msg=f"内部错误：{exc}"[:300],
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
@@ -259,6 +268,7 @@ class Solver:
         *,
         request: SearchRequest,
         question: str,
+        display: str,
         options,
         images: list[ImagePart],
         started: float,
@@ -317,7 +327,7 @@ class Solver:
             self._bump("errors")
             return Answer(
                 code=0,
-                question=request.title or question,
+                question=display,
                 msg="模型未能给出可用的答案",
                 elapsed_ms=int((time.monotonic() - started) * 1000),
                 images=len(images),
@@ -328,7 +338,6 @@ class Solver:
         explain = str(result.get("reason") or "").strip()
         fingerprint = images_fingerprint(images)
         image_key = normalize_question(f"图片题 {fingerprint[:12]}") if fingerprint else ""
-        display = request.title or question or (f"[图片题] {fingerprint[:12]}" if fingerprint else "（无题干）")
         entry = BankEntry(
             key=normalize_question(question) or image_key,
             question=display,
@@ -385,7 +394,7 @@ class Solver:
         reference: str = "",
         corrective: str = "",
     ) -> dict[str, Any]:
-        user_text = self._build_user_prompt(question, options, qtype, reference, corrective)
+        user_text = self._build_user_prompt(question, options, qtype, reference, corrective, len(images))
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
         if images:
@@ -419,6 +428,7 @@ class Solver:
         qtype: str,
         reference: str,
         corrective: str,
+        image_count: int = 0,
     ) -> str:
         parts: list[str] = [
             f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -427,6 +437,10 @@ class Solver:
             "题目：",
             question or "（题目内容为空，请以图片为准）",
         ]
+        if image_count:
+            parts.append(
+                f"说明：本题随附 {image_count} 张图片，题干/选项中的 [图片1]、[图片2] 依次对应第 1、2 张图片。"
+            )
         if options:
             parts += ["", "选项（作答时请使用每行开头的字母）：", format_options_for_prompt(options)]
         else:
@@ -642,6 +656,12 @@ class Solver:
         if len(text) <= 200 and extract_image_sources(text):
             stripped = re.sub(r"https?://\S+", "", text).strip()
             if not stripped:
+                return ""
+        # 纯图片题：OCS 传过来的可能是 " [图片1] "，去掉占位符后若没有实际文字，
+        # 就用图片指纹做 key，避免所有图片题共用同一个缓存键
+        if re.search(r"\[\s*图片\s*\d+\s*\]", text):
+            without_placeholder = re.sub(r"\[\s*图片\s*\d+\s*\]", "", text).strip(" \t\r\n,，、。;；")
+            if not without_placeholder:
                 return ""
         return text
 

@@ -83,7 +83,7 @@ DEFAULTS: dict[str, Any] = {
     "vision": {
         "provider": "",  # 留空表示沿用 llm.provider
         "model": "",  # 留空表示使用该 provider 的 vision_model
-        "max_images": 3,
+        "max_images": 5,
         "max_image_bytes": 8 * 1024 * 1024,
         "timeout": 20,
     },
