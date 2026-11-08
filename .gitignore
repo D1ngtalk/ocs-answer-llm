@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.workbuddy/
 
 # 运行产物
 data/logs/
@@ -10,4 +11,3 @@ data/bank/*.md
 !data/bank/.gitkeep
 ocs-config.local.json
 *.tmp
-./workbuddy
