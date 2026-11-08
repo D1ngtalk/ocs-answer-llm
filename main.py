@@ -157,6 +157,24 @@ def cmd_check(args) -> int:
 def cmd_bank(args) -> int:
     cfg, bank, _ = _bootstrap(args)
 
+    if args.forget:
+        found = bank.forget(args.forget, dry_run=True)
+        if not found:
+            print(f"没有匹配「{args.forget}」的条目。")
+            return 0
+        print(f"匹配到 {len(found)} 条：")
+        for entry in found[:50]:
+            print(f"  - {entry.question[:60]}  →  {entry.answer_labels or entry.answer_text}  ({entry.updated or '未知时间'})")
+        if len(found) > 50:
+            print(f"  ... 另有 {len(found) - 50} 条")
+        if not args.yes:
+            print("\n以上仅为预览。删除后这些题会重新问模型。")
+            print("确认删除请加 --yes（自动备份 .bak）。")
+            return 0
+        bank.forget(args.forget, dry_run=False)
+        print(f"\n已删除 {len(found)} 条，原文件已备份为同目录下的 .bak 文件。")
+        return 0
+
     if args.purge_stale:
         found = bank.purge_stale(dry_run=True)
         if not found:
@@ -225,7 +243,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="清理旧版本留下的无效条目（图片题无指纹、选项有空项；先预览，加 --yes 才删除）",
     )
-    bank.add_argument("--yes", action="store_true", help="配合 --purge-stale 真正执行删除")
+    bank.add_argument(
+        "--forget",
+        default="",
+        metavar="关键词",
+        help="按题干关键词删除条目（先预览，加 --yes 才删除）",
+    )
+    bank.add_argument("--yes", action="store_true", help="配合 --purge-stale / --forget 真正执行删除")
     bank.set_defaults(func=cmd_bank)
     return parser
 

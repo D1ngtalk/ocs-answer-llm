@@ -32,7 +32,8 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 ## 输出格式
 只输出一个 JSON 对象，不要输出 Markdown 代码块，不要输出任何解释性文字。
 {
-  "answer": ["A"],
+  "checks": {"A": true, "B": false, "C": true, "D": false},
+  "answer": ["A", "C"],
   "answers": [],
   "confidence": 0.92,
   "need_search": false,
@@ -41,7 +42,8 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 }
 
 ## 字段说明
-- answer：选择题/判断题的正确选项字母数组，按字母顺序排列；单选题、判断题只给一个。
+- checks：选择题/判断题必须填写。把**每一个**选项字母都列出来，逐个判断它是否成立，true 表示成立、false 表示不成立，不要省略任何一项。
+- answer：正确选项的字母数组，必须与 checks 中为 true 的项完全一致，按字母顺序排列。
 - answers：填空题的答案，每个空一个字符串，按空的顺序排列；非填空题留空数组。
 - confidence：0 到 1 之间的小数，表示你对答案的把握。
 - need_search：答案是否依赖最新信息（新闻、实时数据、赛事结果、人事变动、价格、版本发布等）。拿不准时设为 true。
@@ -49,14 +51,15 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 - reason：一句话说明依据。
 
 ## 作答规则
-1. 选择题必须给字母，不要直接抄选项内容。
-2. 多选题必须把所有正确选项的字母都列出来，不要漏选也不要多选。
-3. 判断题按选项字母作答，注意 A/B 对应的实际选项文字，不要想当然。
-4. 填空题：answers 里给出可以直接填入的文本；有多个空时按顺序给出；计算题只给最终结果，不要写过程。
-5. 如果题目只有图片，请先仔细识别图片中的文字、公式或图表，再作答。
-6. 如果信息不足（例如题目说"如图"但没有提供图片），降低 confidence 并在 reason 中说明。
-7. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。
-8. 不要输出思考过程、逐项分析或任何前言后语。即使需要推理，也只把结论写进 JSON 字段里。"""
+1. 选择题必须先在 checks 里逐项判断，再由 checks 得出 answer，不要跳过逐项判断直接挑一个"最像"的。
+2. 多选题（type=multiple）：这类题通常有 2 个以上正确项。如果 checks 里只有一个 true，请再逐条核对一遍——尤其是表述相近的选项（如「社会进步」与「社会发展」、「现实可能性」与「历史发展规律」），不要因为相似就排除其一，要按教材口径分别判断，确认只有一个成立才只给一个。
+3. 单选题（type=single）：正确答案只有一个，checks 中应恰好有一个 true。选项正好两个且是「对／错」性质时按判断题处理。
+4. 判断题按选项字母作答，注意 A/B 对应的实际选项文字，不要想当然。
+5. 填空题：answers 里给出可以直接填入的文本；有多个空时按顺序给出；计算题只给最终结果，不要写过程。
+6. 如果题目只有图片，请先仔细识别图片中的文字、公式或图表，再作答。
+7. 如果信息不足（例如题目说"如图"但没有提供图片），降低 confidence 并在 reason 中说明。
+8. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。
+9. 不要输出思考过程、逐项分析或任何前言后语。即使需要推理，也只把结论写进 JSON 字段里。"""
 
 # 选项带图片时，补一句提示，避免模型在图片编号上打转
 _IMAGE_OPTION_HINT = (
@@ -506,6 +509,10 @@ class Solver:
             parts += ["", image_note]
         if options:
             parts += ["", "选项（作答时请使用每行开头的字母）：", format_options_for_prompt(options)]
+            if qtype == "multiple":
+                parts.append("本题是多选题：请把每个选项都放进 checks 逐项判断，不要只挑一个最像的，也不要漏项。")
+            elif qtype == "single":
+                parts.append("本题是单选题：checks 中只应有一个 true。")
         else:
             parts += ["", "本题没有提供选项，请按填空/简答处理，把答案文本放进 answers。"]
         if reference:
@@ -542,9 +549,30 @@ class Solver:
             return parts[0] if len(parts) == 1 else "#".join(parts)
         return json.dumps(parts, ensure_ascii=False)
 
+    @staticmethod
+    def _checked_letters(result: dict[str, Any]) -> list[str]:
+        """取 checks 里逐项判断为 true 的选项字母（模型对每个选项的表态）。"""
+        checks = result.get("checks")
+        if not isinstance(checks, dict):
+            return []
+        letters: list[str] = []
+        for key, value in checks.items():
+            label = str(key).strip().upper()
+            if not re.fullmatch(r"[A-Z]", label):
+                continue
+            flag = value is True or str(value).strip().lower() in ("true", "1", "yes", "是", "对", "√")
+            if flag:
+                letters.append(label)
+        return sorted(set(letters))
+
     def _resolve(self, result: dict[str, Any], options, qtype: str) -> tuple[str, str]:
         """把模型输出映射回 OCS 需要的答案字符串。返回 (字母, 答案文本)。"""
         raw_answer = result.get("answer")
+        checked = self._checked_letters(result)
+        if checked:
+            # 多选题以逐项判断为准：模型常常在 answer 里只写一个，但 checks 里判断了多个
+            if qtype == "multiple" or len(checked) == 1:
+                raw_answer = checked
         tokens = self._tokens(raw_answer)
 
         if not options:

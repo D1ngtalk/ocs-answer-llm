@@ -72,6 +72,10 @@ class MockLLM(BaseHTTPRequestHandler):
             answer = {"answer": [], "answers": ["北京", "上海"], "confidence": 0.9, "need_search": False}
         elif "无选项" in question:
             answer = {"answer": [], "answers": ["答案文本"], "confidence": 0.9, "need_search": False}
+        elif "逐项核对" in question:
+            # 模拟模型 answer 只写一个、但 checks 逐项判了多个的情况
+            answer = {"checks": {"A": True, "B": False, "C": True, "D": True},
+                      "answer": ["C"], "answers": [], "confidence": 0.7, "need_search": False}
         elif "不在选项" in question:
             answer = {"answer": ["Z"], "answers": [], "confidence": 0.9, "need_search": False}
         else:
@@ -356,6 +360,19 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(answer.code, 1, answer.msg)
         self.assertEqual(answer.answer, "B. 乙")
         self.assertEqual(len(MockLLM.calls), 1, "JSON 就在推理内容里，无需再修复")
+
+    def test_multiple_uses_checks(self):
+        """多选以 checks 的逐项判断为准，answer 只写一个也不会漏选。"""
+        answer = self.ask("这道逐项核对的题", "A. 甲\nB. 乙\nC. 丙\nD. 丁", "multiple")
+        self.assertEqual(answer.labels, "A#C#D")
+
+    def test_single_prefers_explicit_answer(self):
+        """单选时模型若在 checks 里判了多个 true，仍以它显式给的 answer 为准。"""
+        from ocs_answerer.solver import Solver as SolverCls
+
+        options = parse_options("A. 甲\nB. 乙\nC. 丙")
+        result = {"checks": {"A": True, "B": True}, "answer": ["B"]}
+        self.assertEqual(SolverCls._resolve(self.solver, result, options, "single"), ("B", "B. 乙"))
 
     def test_image_options_use_letters(self):
         """选项是图片时回传字母，否则 OCS 侧（选项文本是图片 URL）匹配不上。"""

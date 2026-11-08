@@ -313,6 +313,7 @@ B. 2" -t single                      # 命令行直接问一道题
 python main.py ask "看图作答" -i ./题目.png --no-cache
 python main.py bank -q 网络 -n 10    # 查题库
 python main.py bank --purge-stale    # 预览旧版无效条目（加 --yes 才删除，会先备份 .bak）
+python main.py bank --forget 关键词   # 删掉匹配的缓存，让它重新作答（同样要 --yes）
 ```
 
 `ask` 加 `--json` 可以看完整返回，方便排查。
@@ -374,6 +375,9 @@ curl "http://127.0.0.1:8000/api/search?title=1%2B1%3D%3F&options=A.%201%0AB.%202
 
 **Q：数学/公式题互相串答案。**
 两种旧数据会被自动跳过，不会再被命中：一是题干含 `[图片N]` 但没有图片指纹的图片题（键对不上），二是选项里含空项的条目（字母答案整体错位）。它们会留在 md 里当噪音，可以 `python main.py bank --purge-stale` 预览、加 `--yes` 清理（自动备份 .bak）。
+
+**Q：多选题只返回了一个选项。**
+提示词现在要求模型先在 `checks` 字段里按选项字母**逐个判断**，再由 checks 汇总出 answer；程序也只认 checks。这样模型即使习惯性只挑一个，逐项判断的结果也会被采纳。之前答错的题可以 `python main.py bank --forget 题干关键词 --yes` 删掉缓存让它重答。
 
 **Q：多选题答成了单选题的答案。**
 1.1 起题库按「题干 + 题型 + 选项」三重校验，不会再跨题型复用。若仍出现，检查 `data/bank/*.md` 里那条记录是不是手工写的、且没写 `- 类型:`；补上题型即可。

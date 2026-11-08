@@ -495,20 +495,35 @@ class Bank:
             removed = [e for e in self._entries if self._is_stale(e)]
             if dry_run or not removed:
                 return removed
-            removed_ids = {id(e) for e in removed}
-            self._entries = [e for e in self._entries if id(e) not in removed_ids]
-            for key, entries in list(self._index.items()):
-                kept = [e for e in entries if id(e) not in removed_ids]
-                if kept:
-                    self._index[key] = kept
-                else:
-                    self._index.pop(key, None)
-            for path, entries in self._by_file.items():
-                self._by_file[path] = [e for e in entries if id(e) not in removed_ids]
-            for path in list(self._by_file):
-                self._backup(path)
-                self._rewrite_file(path)
+            self._remove_entries(removed)
             return removed
+
+    def forget(self, keyword: str, *, dry_run: bool = True) -> list[BankEntry]:
+        """按题干关键词删除条目（答错了想重新问一遍时用）。"""
+        needle = normalize_question(keyword)
+        with self._lock:
+            if not needle:
+                return []
+            removed = [e for e in self._entries if needle in e.key]
+            if dry_run or not removed:
+                return removed
+            self._remove_entries(removed)
+            return removed
+
+    def _remove_entries(self, removed: list[BankEntry]) -> None:
+        removed_ids = {id(e) for e in removed}
+        self._entries = [e for e in self._entries if id(e) not in removed_ids]
+        for key, entries in list(self._index.items()):
+            kept = [e for e in entries if id(e) not in removed_ids]
+            if kept:
+                self._index[key] = kept
+            else:
+                self._index.pop(key, None)
+        for path, entries in self._by_file.items():
+            self._by_file[path] = [e for e in entries if id(e) not in removed_ids]
+        for path in list(self._by_file):
+            self._backup(path)
+            self._rewrite_file(path)
 
     @staticmethod
     def _backup(path: Path) -> Path | None:
