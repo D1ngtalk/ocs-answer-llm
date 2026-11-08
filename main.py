@@ -15,7 +15,15 @@ import json
 import sys
 from pathlib import Path
 
-from ocs_answerer.bank import Bank
+# tomllib 是 3.11 才有的标准库，版本不够时给一句人话，而不是一串 ImportError
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        "需要 Python 3.11 或更高版本，当前是 %s。\n"
+        "请从 https://www.python.org/downloads/ 安装新版本后重试。\n" % sys.version.split()[0]
+    )
+    raise SystemExit(1)
+
+from ocs_answerer.bank import Bank  # noqa: E402
 from ocs_answerer.config import Config, ConfigError
 from ocs_answerer.log import setup_logging
 from ocs_answerer.server import build_ocs_config, serve_forever
