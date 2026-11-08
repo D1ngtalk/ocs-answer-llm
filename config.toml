@@ -1,0 +1,123 @@
+# =============================================================================
+#  OCS 本地 AI 题库 · 配置文件
+#
+#  最省事的用法：只改 [llm] 里的 provider，再把它对应的 api_key 填上，
+#  然后运行 `python main.py`。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 服务
+# -----------------------------------------------------------------------------
+[server]
+host = "127.0.0.1"          # 只监听本机，局域网内其它设备访问改为 "0.0.0.0"
+port = 8000
+public_url = ""             # 留空自动使用 http://host:port；反代/远程时手动填写
+log_level = "INFO"          # DEBUG 会打印请求细节
+log_file = "data/logs/ocs.log"
+
+# -----------------------------------------------------------------------------
+# 大模型（所有兼容 OpenAI 接口的服务都能用）
+# 换服务商只需改 provider，并填写对应的 api_key
+# -----------------------------------------------------------------------------
+[llm]
+provider = "deepseek"       # deepseek / qwen / zhipu / moonshot / openai / siliconflow / ollama
+timeout = 40                # 单次模型调用超时（秒）。OCS 整个请求超时为 60 秒，别设太大
+max_retries = 2
+temperature = 0.1
+max_tokens = 1200
+json_mode = true            # 让模型返回 JSON；个别服务不支持时会自动降级重试
+
+# --- DeepSeek ----------------------------------------------------------------
+[llm.providers.deepseek]
+base_url = "https://api.deepseek.com/"
+api_key = "sk-4e563042975a4fae96eda3bdbd929b89"                # 在这里填 sk-xxxxxx
+model = "deepseek-flash"     # 或 deepseek-reasoner
+vision_model = "deepseek-flash"           # DeepSeek 暂不支持识图，图片题请配下面的通义/智谱
+
+# --- 通义千问（阿里云百炼，识图推荐） -----------------------------------------
+[llm.providers.qwen]
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = ""
+model = "qwen-plus"
+vision_model = "qwen-vl-max"
+
+# --- 智谱 GLM ----------------------------------------------------------------
+[llm.providers.zhipu]
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key = ""
+model = "glm-4-flash"
+vision_model = "glm-4v-flash"
+
+# --- 月之暗面 Kimi -----------------------------------------------------------
+[llm.providers.moonshot]
+base_url = "https://api.moonshot.cn/v1"
+api_key = ""
+model = "moonshot-v1-8k"
+vision_model = "moonshot-v1-8k-vision-preview"
+
+# --- OpenAI --------------------------------------------------------------
+[llm.providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-4o-mini"
+vision_model = "gpt-4o-mini"
+
+# --- SiliconFlow（可白嫖部分开源模型） ----------------------------------------
+[llm.providers.siliconflow]
+base_url = "https://api.siliconflow.cn/v1"
+api_key = ""
+model = "Qwen/Qwen2.5-7B-Instruct"
+vision_model = "Qwen/Qwen2-VL-72B-Instruct"
+
+# --- 本地 Ollama -------------------------------------------------------------
+[llm.providers.ollama]
+base_url = "http://127.0.0.1:11434/v1"
+api_key = "ollama"
+model = "qwen2.5:7b"
+vision_model = "llava"
+
+# -----------------------------------------------------------------------------
+# 识图
+# -----------------------------------------------------------------------------
+[vision]
+provider = ""               # 留空沿用 [llm] 的 provider，推荐单独设为 "qwen"
+model = ""                  # 留空使用该 provider 的 vision_model
+max_images = 3              # 单题最多识别几张图
+max_image_bytes = 8388608   # 单张图上限 8MB
+timeout = 20
+
+# -----------------------------------------------------------------------------
+# 联网搜索（时事类题目）
+# providers 按顺序尝试，第一个有结果的就用；前三个需要填 key，后两个免费
+# -----------------------------------------------------------------------------
+[search]
+enabled = true
+mode = "auto"               # auto=模型判断+关键词兜底 / always=每题都搜（慢） / never=关闭
+providers = ["bing", "duckduckgo"]
+max_results = 6
+timeout = 10
+tavily_api_key = ""
+serper_api_key = ""
+bocha_api_key = ""
+
+# -----------------------------------------------------------------------------
+# 题库（Markdown 缓存）
+# -----------------------------------------------------------------------------
+[bank]
+dir = "data/bank"
+file = "default.md"         # 新题写入这个文件，目录下其它 .md 也会被读取
+fuzzy = true                # 题干有细微差异时也复用答案
+fuzzy_threshold = 0.92
+verify_options = true       # 同题干但选项不同时，不复用旧答案
+option_threshold = 0.72
+update_existing = true
+
+# -----------------------------------------------------------------------------
+# 行为
+# -----------------------------------------------------------------------------
+[behavior]
+total_timeout = 55          # 单题总预算（秒），OCS 侧为 60 秒
+retry_on_low_confidence = true
+low_confidence = 0.45       # 模型自评低于该值时补一次联网
+save_to_bank = true
+max_question_chars = 2000
