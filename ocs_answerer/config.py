@@ -22,7 +22,7 @@ DEFAULT_PROVIDERS: dict[str, dict[str, Any]] = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "api_key": "",
-        "model": "deepseek-chat",
+        "model": "deepseek-flash",
         "vision_model": "",
     },
     "qwen": {
@@ -78,6 +78,11 @@ DEFAULTS: dict[str, Any] = {
         "temperature": 0.1,
         "max_tokens": 1600,
         "json_mode": True,
+        # 思考模式：auto / on / off
+        # auto = 只在 DeepSeek 官方接口上发 thinking 参数，避免其它厂商因未知字段报 400
+        "thinking": "auto",
+        # 思考强度：low / high / max（服务端默认 high，答题场景 low 更快且够用）
+        "thinking_effort": "low",
         "providers": DEFAULT_PROVIDERS,
     },
     "vision": {
@@ -141,8 +146,28 @@ class Provider:
     timeout: float = 40.0
     temperature: float = 0.1
     max_tokens: int = 1600
+    # 思考模式：auto / on / off；auto 表示只在 DeepSeek 官方接口上启用
+    thinking: str = "auto"
+    # 思考强度：low / high / max（留空表示不发送，用服务端默认 high）
+    thinking_effort: str = "low"
     extra_headers: dict[str, str] = field(default_factory=dict)
     extra_body: dict[str, Any] = field(default_factory=dict)
+
+
+def _thinking_mode(value: Any, default: str = "auto") -> str:
+    """把 thinking 配置规整成 auto/on/off，兼容 TOML 布尔值。"""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    text = str(value).strip().lower()
+    if text in ("on", "true", "yes", "enabled", "enable", "1"):
+        return "on"
+    if text in ("off", "false", "no", "disabled", "disable", "0"):
+        return "off"
+    if text in ("auto", "default"):
+        return "auto"
+    return default
 
 
 class Config:
@@ -239,6 +264,10 @@ class Config:
             timeout=float(raw.get("timeout") or 40),
             temperature=float(raw.get("temperature") or 0.1),
             max_tokens=int(raw.get("max_tokens") or 1600),
+            thinking=_thinking_mode(raw.get("thinking"), _thinking_mode(self.get("llm.thinking"))),
+            thinking_effort=str(raw.get("thinking_effort", self.get("llm.thinking_effort", "low")) or "")
+            .strip()
+            .lower(),
             extra_headers=dict(raw.get("extra_headers") or {}),
             extra_body=dict(raw.get("extra_body") or {}),
         )

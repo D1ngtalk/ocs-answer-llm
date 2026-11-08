@@ -25,6 +25,7 @@ if sys.version_info < (3, 11):
 
 from ocs_answerer.bank import Bank  # noqa: E402
 from ocs_answerer.config import Config, ConfigError
+from ocs_answerer.llm import LLMClient
 from ocs_answerer.log import setup_logging
 from ocs_answerer.server import build_ocs_config, serve_forever
 from ocs_answerer.solver import SearchRequest, Solver
@@ -121,6 +122,7 @@ def cmd_check(args) -> int:
     else:
         provider = cfg.provider()
         print(f"[配置] [OK] 服务商 {provider.name}，模型 {provider.model}，密钥 {'已填写' if provider.api_key else '未填写'}")
+        print(f"[配置] [OK] 思考模式：{LLMClient(provider).thinking_summary()}")
         vision = cfg.vision_provider()
         if vision:
             print(f"[配置] [OK] 识图模型 {vision.name} / {vision.model}")

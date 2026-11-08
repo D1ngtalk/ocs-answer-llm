@@ -130,6 +130,8 @@ python main.py config
 | `server.port` | 本地监听端口 | `8000` |
 | `llm.provider` | 使用哪家模型 | `deepseek` |
 | `llm.timeout` | 单次模型调用超时（秒） | `40` |
+| `llm.thinking` | 思考模式：`auto`（只在 DeepSeek 上发）/ `on` / `off` | `auto` |
+| `llm.thinking_effort` | 思考强度：`low` / `high` / `max` | `low` |
 | `vision.provider` | 识图用哪家，留空沿用 `llm.provider` | `""` |
 | `search.mode` | `auto` 自动判断 / `always` 每题都搜 / `never` 关闭 | `auto` |
 | `search.providers` | 搜索渠道，按顺序尝试 | `["bing","duckduckgo"]` |
@@ -144,11 +146,44 @@ python main.py config
 curl http://127.0.0.1:8000/api/reload
 ```
 
+### 思考模式（DeepSeek）
+
+按 [DeepSeek 思考模式文档](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode) 接入，用的是 OpenAI 格式的两个参数：
+
+```json
+{"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
+```
+
+配置里两个开关：
+
+```toml
+[llm]
+thinking = "auto"          # auto / on / off
+thinking_effort = "low"    # low / high / max
+```
+
+- **`auto`（默认）**：只有在 `base_url` 指向 DeepSeek 官方接口时才发送这两个参数。别的厂商收到未知字段可能直接 400，所以默认不发给它们。
+- **`on`**：强制发送，自建/中转的 DeepSeek 兼容接口用这个。
+- **`off`**：发送 `{"thinking": {"type": "disabled"}}`，速度最快。
+- 思考强度默认 **`low`**：DeepSeek 服务端默认是 `high`，答题场景 `low` 更快，实测 2 秒左右能出结果。要更稳就改 `high` / `max`。
+
+两点实现细节：
+
+- 思考模式不支持 `temperature`，程序在开启思考时会自动不发送这个字段。
+- `python main.py check` 会额外打印一行「思考模式：开启，强度 low」，方便确认生效。
+
+单个服务商可以覆盖全局设置，写在自己的 `[llm.providers.xxx]` 里即可：
+
+```toml
+[llm.providers.deepseek]
+thinking = "off"
+```
+
 ### 预置的模型服务商
 
 | provider | base_url | 默认模型 | 识图模型 |
 | --- | --- | --- | --- |
-| `deepseek` | api.deepseek.com/v1 | deepseek-chat | — |
+| `deepseek` | api.deepseek.com/v1 | deepseek-flash | —（flash 本身支持识图） |
 | `qwen` | dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus | qwen-vl-max |
 | `zhipu` | open.bigmodel.cn/api/paas/v4 | glm-4-flash | glm-4v-flash |
 | `moonshot` | api.moonshot.cn/v1 | moonshot-v1-8k | moonshot-v1-8k-vision-preview |
@@ -156,7 +191,7 @@ curl http://127.0.0.1:8000/api/reload
 | `siliconflow` | api.siliconflow.cn/v1 | Qwen2.5-7B-Instruct | Qwen2-VL-72B |
 | `ollama` | 127.0.0.1:11434/v1 | qwen2.5:7b | llava |
 
-**推荐组合**：主模型用 `deepseek-chat`（便宜、中文好），识图单独指到 `qwen`：
+**推荐组合**：主模型用 `deepseek-flash`（便宜、中文好、自带识图），复杂题想更稳可以换 `deepseek-v4-pro`。识图也可以单独指到 `qwen-vl`：
 
 ```toml
 [vision]
@@ -320,7 +355,7 @@ curl "http://127.0.0.1:8000/api/search?title=1%2B1%3D%3F&options=A.%201%0AB.%202
 ## 常见问题
 
 **Q：OCS 里显示「题库请求超时」。**
-模型太慢或网络差。先把 `llm.timeout` 调小到 25~30，换更快的模型（`glm-4-flash`、`qwen-turbo`、`deepseek-chat`），`search.mode` 改 `auto` 或 `never`。已命中题库的题目不受影响。
+模型太慢或网络差。先把 `llm.timeout` 调小到 25~30，换更快的模型（`glm-4-flash`、`qwen-turbo`、`deepseek-flash`），`search.mode` 改 `auto` 或 `never`。已命中题库的题目不受影响。
 
 **Q：脚本提示域名未授权 / 请求被拦截。**
 把油猴 `@connect` 设为宽松模式，或换全域名通用版脚本。`type` 一定要是 `GM_xmlhttpRequest`。

@@ -120,6 +120,8 @@ timeout = 10
 base_url = "http://127.0.0.1:{llm_port}/v1"
 api_key = "test"
 model = "mock-model"
+thinking = "on"
+thinking_effort = "low"
 
 [search]
 enabled = false
@@ -421,6 +423,14 @@ class EndToEndTest(unittest.TestCase):
         self.assertIsNotNone(entry2)
         self.assertEqual(entry2.answer_text, "[图片3]")
 
+    def test_thinking_params_sent(self):
+        """思考模式参数要按配置发出去，并且思考模式下不再发 temperature。"""
+        self.ask("思考参数测试", "A. 甲\nB. 乙", "single")
+        payload = MockLLM.calls[-1]
+        self.assertEqual(payload["thinking"], {"type": "enabled"})
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertNotIn("temperature", payload, "思考模式不支持 temperature，不应发送")
+
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
         port = server.server_address[1]
@@ -453,6 +463,60 @@ class EndToEndTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class ThinkingConfigTest(unittest.TestCase):
+    """思考模式开关与强度（DeepSeek 文档 https://api-docs.deepseek.com/zh-cn/guides/thinking_mode）。"""
+
+    @staticmethod
+    def provider(**kwargs):
+        from ocs_answerer.config import Provider
+
+        base = dict(name="x", base_url="https://api.deepseek.com", api_key="k", model="deepseek-flash")
+        base.update(kwargs)
+        return Provider(**base)
+
+    def test_auto_deepseek_defaults_to_low(self):
+        from ocs_answerer.llm import LLMClient
+
+        body = LLMClient(self.provider(thinking="auto", thinking_effort="low")).thinking_payload()
+        self.assertEqual(body, {"thinking": {"type": "enabled"}, "reasoning_effort": "low"})
+
+    def test_auto_leaves_other_providers_alone(self):
+        from ocs_answerer.llm import LLMClient
+
+        body = LLMClient(self.provider(base_url="https://api.openai.com/v1")).thinking_payload()
+        self.assertEqual(body, {}, "非 DeepSeek 服务商不能收到 thinking 字段")
+
+    def test_force_on_for_relay(self):
+        from ocs_answerer.llm import LLMClient
+
+        body = LLMClient(
+            self.provider(base_url="https://relay.example.com/v1", thinking="on", thinking_effort="max")
+        ).thinking_payload()
+        self.assertEqual(body, {"thinking": {"type": "enabled"}, "reasoning_effort": "max"})
+
+    def test_off(self):
+        from ocs_answerer.llm import LLMClient
+
+        body = LLMClient(self.provider(thinking="off", thinking_effort="low")).thinking_payload()
+        self.assertEqual(body, {"thinking": {"type": "disabled"}})
+
+    def test_ping_disables_thinking(self):
+        from ocs_answerer.llm import LLMClient
+
+        body = LLMClient(self.provider(thinking="auto")).thinking_payload(False)
+        self.assertEqual(body, {"thinking": {"type": "disabled"}})
+
+    def test_bool_and_alias_values(self):
+        from ocs_answerer.config import _thinking_mode
+
+        self.assertEqual(_thinking_mode(True), "on")
+        self.assertEqual(_thinking_mode(False), "off")
+        self.assertEqual(_thinking_mode("ENABLED"), "on")
+        self.assertEqual(_thinking_mode("disabled"), "off")
+        self.assertEqual(_thinking_mode("", "auto"), "auto")
+        self.assertEqual(_thinking_mode(None), "auto")
 
 
 class JsonExtractTest(unittest.TestCase):

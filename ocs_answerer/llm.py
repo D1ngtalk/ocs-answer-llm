@@ -217,6 +217,49 @@ class LLMClient:
         self.endpoint = build_endpoint(provider.base_url)
         self.json_mode = provider.json_mode if json_mode is None else json_mode
 
+    # -- 思考模式 -----------------------------------------------------------
+
+    def _supports_thinking(self) -> bool:
+        """目前只对 DeepSeek 官方接口自动启用，避免别的厂商收到未知字段报 400。"""
+        return "deepseek" in (self.provider.base_url or "").lower()
+
+    def thinking_payload(self, override: bool | None = None) -> dict[str, Any]:
+        """生成 thinking / reasoning_effort 参数；该服务商不支持时返回空字典。
+
+        对应 https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+        * 开关：{"thinking": {"type": "enabled" | "disabled"}}
+        * 强度：{"reasoning_effort": "low" | "high" | "max"}
+        """
+        mode = self.provider.thinking
+        if override is True:
+            enabled = True
+        elif override is False:
+            # 显式关闭；如果这个服务商本来就不发，就什么都不加
+            if mode == "auto" and not self._supports_thinking():
+                return {}
+            enabled = False
+        elif mode == "auto":
+            if not self._supports_thinking():
+                return {}
+            enabled = True
+        else:
+            enabled = mode == "on"
+
+        payload: dict[str, Any] = {"thinking": {"type": "enabled" if enabled else "disabled"}}
+        effort = (self.provider.thinking_effort or "").strip().lower()
+        if enabled and effort:
+            payload["reasoning_effort"] = effort
+        return payload
+
+    def thinking_summary(self) -> str:
+        body = self.thinking_payload()
+        if not body:
+            return "未启用（该服务商不发送 thinking 参数）"
+        enabled = body["thinking"]["type"] == "enabled"
+        if not enabled:
+            return "关闭"
+        return f"开启，强度 {body.get('reasoning_effort', '服务端默认')}"
+
     # -- 基础调用 -----------------------------------------------------------
 
     def chat(
@@ -230,6 +273,7 @@ class LLMClient:
         retries: int = 2,
         deadline: float | None = None,
         fallback_reasoning: bool = False,
+        thinking: bool | None = None,
     ) -> str:
         payload: dict[str, Any] = {
             "model": self.provider.model,
@@ -241,6 +285,12 @@ class LLMClient:
         use_json = self.json_mode if json_mode is None else json_mode
         if use_json:
             payload["response_format"] = {"type": "json_object"}
+        thinking_body = self.thinking_payload(thinking)
+        if thinking_body:
+            payload.update(thinking_body)
+            if thinking_body["thinking"]["type"] == "enabled":
+                # 思考模式不支持 temperature，传了也不生效，干脆不发
+                payload.pop("temperature", None)
         if self.provider.extra_body:
             payload.update(self.provider.extra_body)
 
@@ -380,5 +430,7 @@ class LLMClient:
             timeout=timeout,
             max_tokens=16,
             retries=0,
+            # 自检只是为了验证连通性，关掉思考以免等太久
+            thinking=False,
         )
         return text.strip()
