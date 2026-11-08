@@ -20,7 +20,7 @@
 [server]
 host = "127.0.0.1"          # 只监听本机，局域网内其它设备访问改为 "0.0.0.0"
 port = 8000
-public_url = ""             # 留空自动使用 http://host:port；反代/远程时手动填写
+public_url = ""             # 只影响命令行 `python main.py config` 的输出；网页里会自动用你访问的地址
 log_level = "INFO"          # DEBUG 会打印请求细节
 log_file = "data/logs/ocs.log"
 

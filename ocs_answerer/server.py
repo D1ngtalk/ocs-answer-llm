@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.parse
@@ -89,7 +90,7 @@ def build_ocs_config(base_url: str) -> list[dict[str, Any]]:
     return [
         {
             "name": "本地AI题库",
-            "homepage": "http://127.0.0.1",
+            "homepage": base_url.rstrip("/"),
             "url": f"{base_url.rstrip('/')}/api/search",
             "method": "post",
             "contentType": "json",
@@ -119,6 +120,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:  # 覆盖默认 stderr 输出
         log.debug("%s - %s", self.address_string(), fmt % args)
+
+    def _base_url(self) -> str:
+        """用浏览器实际访问的地址生成题库配置。
+
+        从 127.0.0.1 打开就是 127.0.0.1，从局域网 IP 打开就是那个 IP，
+        换设备访问时不用再手动改配置里的地址。
+        """
+        host = (self.headers.get("Host") or "").strip()
+        # 只接受 host / host:port / [ipv6]:port，防止 Host 头里塞奇怪的东西
+        if not host or not re.fullmatch(r"[A-Za-z0-9.\-\[\]:]{1,80}", host):
+            return self.cfg.public_url
+        scheme = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip().lower()
+        if scheme not in ("http", "https"):
+            scheme = "http"
+        return f"{scheme}://{host}"
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -183,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path in ("/api/search", "/search", "/api/answer", "/answer"):
                 self._handle_search()
             elif path in ("/api/ocs-config", "/ocs-config", "/api/config"):
-                self._json(build_ocs_config(self.cfg.public_url))
+                self._json(build_ocs_config(self._base_url()))
             elif path in ("/api/stats", "/stats"):
                 self._json(self.solver.stats_snapshot())
             elif path in ("/api/reload", "/reload"):
@@ -258,7 +274,8 @@ class Handler(BaseHTTPRequestHandler):
             provider_text = "未配置"
         stats = self.solver.stats_snapshot()
         bank_entries = stats["bank"]["entries"]
-        config_json = json.dumps(build_ocs_config(self.cfg.public_url), ensure_ascii=False, indent=2)
+        base_url = self._base_url()
+        config_json = json.dumps(build_ocs_config(base_url), ensure_ascii=False, indent=2)
         config_html = (
             config_json.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         )
@@ -301,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
 <body>
 <div class="wrap">
   <h1>OCS 本地 AI 题库</h1>
-  <p class="sub">v{__version__} · {self.cfg.public_url} · 服务运行中</p>
+  <p class="sub">v{__version__} · {base_url} · 服务运行中</p>
 
   <div class="grid">
     <div class="card"><div class="k">模型</div><div class="v" style="font-size:14px">{provider_text}</div></div>

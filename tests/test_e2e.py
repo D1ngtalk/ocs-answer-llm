@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
@@ -430,6 +431,36 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(payload["thinking"], {"type": "enabled"})
         self.assertEqual(payload["reasoning_effort"], "low")
         self.assertNotIn("temperature", payload, "思考模式不支持 temperature，不应发送")
+
+    def test_ocs_config_uses_request_host(self):
+        """题库配置里的地址要跟着浏览器访问的地址走，换设备访问不用手改 IP。"""
+        server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True).start()
+
+        def fetch(path: str, host: str) -> str:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", path, headers={"Host": host})
+            body = conn.getresponse().read().decode("utf-8")
+            conn.close()
+            return body
+
+        try:
+            lan = f"192.168.1.50:{port}"
+            data = json.loads(fetch("/api/ocs-config", lan))
+            self.assertEqual(data[0]["url"], f"http://{lan}/api/search")
+            self.assertEqual(data[0]["homepage"], f"http://{lan}")
+
+            html = fetch("/", lan)
+            self.assertIn(lan, html)
+            self.assertNotIn(f"127.0.0.1:{port}", html, "页面里不应再写死回环地址")
+
+            # Host 头被塞了奇怪内容时退回配置里的地址，不原样回显
+            weird = json.loads(fetch("/api/ocs-config", 'evil.example"><script>'))
+            self.assertNotIn("evil.example", weird[0]["url"])
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
