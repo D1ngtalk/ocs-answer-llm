@@ -184,7 +184,9 @@ class Config:
         p = Path(path)
         if not p.exists():
             raise ConfigError(
-                f"找不到配置文件：{p}\n请先复制 config.example.toml 为 config.toml 并填写 api_key。"
+                f"找不到配置文件：{p}\n"
+                "直接运行 `python main.py` 会自动进入初始化向导（选择模型 + 填 api_key），\n"
+                "也可以手动复制 config.example.toml 为 config.toml 后填写。"
             )
         try:
             with p.open("rb") as fh:

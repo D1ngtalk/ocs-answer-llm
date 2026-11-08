@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """命令行入口。
 
-    python main.py                 启动服务
+    python main.py                 启动服务（首次运行会引导初始化）
+    python main.py setup           重新选择服务商、填写 api_key
     python main.py ask "题目"       本地测一道题
     python main.py config          打印 OCS 题库配置
     python main.py check           自检（配置、模型连通性、题库目录）
@@ -28,6 +29,7 @@ from ocs_answerer.config import Config, ConfigError
 from ocs_answerer.llm import LLMClient
 from ocs_answerer.log import setup_logging
 from ocs_answerer.server import build_ocs_config, serve_forever
+from ocs_answerer.setup_wizard import run_wizard
 from ocs_answerer.solver import SearchRequest, Solver
 
 
@@ -51,13 +53,34 @@ def _bootstrap(args) -> tuple[Config, Bank, Solver]:
     return cfg, bank, solver
 
 
+def _apply_overrides(cfg: Config, args) -> None:
+    if getattr(args, "host", ""):
+        cfg.data["server"]["host"] = args.host
+    if getattr(args, "port", 0):
+        cfg.data["server"]["port"] = args.port
+
+
+def _needs_api_key(cfg: Config) -> bool:
+    """主模型是远程服务、但 api_key 还没填。"""
+    try:
+        provider = cfg.provider()
+    except ConfigError:
+        return False
+    if provider.api_key:
+        return False
+    return "127.0.0.1" not in provider.base_url and "localhost" not in provider.base_url
+
+
 def cmd_serve(args) -> int:
     cfg, bank, solver = _bootstrap(args)
-    if args.host:
-        cfg.data["server"]["host"] = args.host
-    if args.port:
-        cfg.data["server"]["port"] = args.port
+    _apply_overrides(cfg, args)
     problems = cfg.check_ready()
+    if problems and _needs_api_key(cfg):
+        print("\n检测到 api_key 还没有填写，进入初始化向导…")
+        if run_wizard(Path(args.config), force=True):
+            cfg, bank, solver = _bootstrap(args)
+            _apply_overrides(cfg, args)
+            problems = cfg.check_ready()
     if problems:
         print("配置有问题：")
         for item in problems:
@@ -95,6 +118,17 @@ def cmd_ask(args) -> int:
     print(f"耗时：{answer.elapsed_ms / 1000:.1f}s")
     if answer.explain:
         print(f"理由：{answer.explain}")
+    return 0
+
+
+def cmd_setup(args) -> int:
+    """重新运行初始化向导：选服务商、改模型、换 api_key。"""
+    path = Path(args.config)
+    ready = run_wizard(path, force=True, verify=not args.skip_test)
+    if not ready:
+        print("\n配置还不完整，补齐后运行 python main.py 启动服务。")
+        return 1
+    print("\n下一步：运行 python main.py 启动服务。")
     return 0
 
 
@@ -230,6 +264,10 @@ def build_parser() -> argparse.ArgumentParser:
     config.add_argument("-O", "--output", default="", help="同时写入文件")
     config.set_defaults(func=cmd_config)
 
+    setup = sub.add_parser("setup", help="重新选择服务商、填写 api_key（首次运行会自动调用）")
+    setup.add_argument("--skip-test", action="store_true", help="跳过连通性测试")
+    setup.set_defaults(func=cmd_setup)
+
     check = sub.add_parser("check", help="自检配置与连通性")
     check.set_defaults(func=cmd_check)
 
@@ -270,6 +308,12 @@ def main(argv: list[str] | None = None) -> int:
         args.host = ""
         args.port = 0
     try:
+        # 首次运行：没有 config.toml 就先走一遍初始化向导，做完继续执行原命令
+        if args.command != "setup" and not Path(args.config).exists():
+            ready = run_wizard(Path(args.config))
+            if not ready and args.command == "serve":
+                print("\n配置还没完成：补上 api_key 后再运行 python main.py。")
+                return 1
         return int(args.func(args))
     except ConfigError as exc:
         print(f"配置错误：{exc}")

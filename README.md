@@ -31,35 +31,44 @@ OCS 单次题库请求的超时是 **60 秒**，程序内置 55 秒总预算，�
 
 ## 快速开始
 
-### 1. 准备配置并填 API Key
-
-`config.toml` 里放的是你自己的 Key，已在 `.gitignore` 中，不会被提交。第一次使用先复制模板：
-
-```bash
-cp config.example.toml config.toml          # Windows: copy config.example.toml config.toml
-```
-
-然后打开 `config.toml`，找到 `[llm]`：
-
-```toml
-[llm]
-provider = "deepseek"        # 用哪家模型
-
-[llm.providers.deepseek]
-api_key = "sk-你的密钥"       # 填这里
-```
-
-> 换别家只需改 `provider`，再填对应小节里的 `api_key`。配置里已经预置了 7 家服务商的地址和默认模型。
-
-> 要求 OCS **4.7.21 及以上**（题库配置支持自定义字段 handler），图片题优化需要 5.x。
-
-### 2. 启动
+### 1. 启动（首次运行会引导配置）
 
 Windows 双击 `start.bat`，或者命令行：
 
 ```bash
 python main.py
 ```
+
+第一次运行时没有 `config.toml`，程序会复制一份模板，然后引导你选服务商、填 Key：
+
+```
+================================================================
+  初始化配置向导
+================================================================
+没有找到 config.toml，已根据模板生成一份，接下来按提示选模型、填密钥即可。
+
+请选择模型服务商（输入序号，直接回车使用 1）：
+
+  1) DeepSeek     deepseek-flash     便宜、中文好，支持识图  ← 推荐
+  2) 通义千问      qwen-plus          识图能力最强（qwen-vl-max）
+  3) 智谱 GLM     glm-4-flash        有免费额度
+  ...
+
+服务商序号 [1]:
+模型名称 [deepseek-flash]:
+  DeepSeek 的密钥申请地址：https://platform.deepseek.com/api_keys
+  粘贴后按回车；输入时不回显。留空可稍后再填。
+请输入 DeepSeek 的 API Key:
+```
+
+输入完会立刻测一次连通性，没通过可以当场重输；通过后自动启动服务。
+
+- 密钥只写进本机的 `config.toml`，该文件已在 `.gitignore` 中；
+- 不想现在填也可以直接回车，配置会先落盘，但启动时会提示补填；
+- 以后想换服务商或换 Key：`python main.py setup`；
+- 也可以手动编辑 `config.toml`，每项都有中文注释（`config.example.toml` 是模板）。
+
+### 2. 确认服务已启动
 
 看到下面这段就成功了：
 
@@ -304,7 +313,8 @@ return (env) => {
 ## 命令行
 
 ```bash
-python main.py                       # 启动服务（等价于 serve）
+python main.py                       # 启动服务（等价于 serve；缺 config.toml 时自动进向导）
+python main.py setup                 # 重新选服务商 / 模型 / 换 api_key
 python main.py serve --port 8080     # 指定端口
 python main.py check                 # 自检：配置 / 题库目录 / 模型连通性
 python main.py config                # 打印 OCS 题库配置
@@ -315,6 +325,8 @@ python main.py bank -q 网络 -n 10    # 查题库
 python main.py bank --purge-stale    # 预览旧版无效条目（加 --yes 才删除，会先备份 .bak）
 python main.py bank --forget 关键词   # 删掉匹配的缓存，让它重新作答（同样要 --yes）
 ```
+
+> 非交互环境（如计划任务、CI）没有 `config.toml` 时不会卡住等输入，而是直接报错并给出两种补齐方式。手动写配置时，把 `config.example.toml` 复制成 `config.toml` 即可。
 
 `ask` 加 `--json` 可以看完整返回，方便排查。
 

@@ -1,7 +1,10 @@
 # =============================================================================
-#  配置模板
+#  配置模板（config.example.toml）
 #
-#  用法：复制本文件为 config.toml，再填写 api_key：
+#  不需要手动复制：第一次运行 `python main.py` 或双击 start.bat 时，
+#  程序会自动复制本文件为 config.toml，并引导你选择服务商、填写 api_key。
+#
+#  想手动配置也可以：复制本文件为 config.toml 后编辑：
 #      Windows:  copy config.example.toml config.toml
 #      macOS/Linux:  cp config.example.toml config.toml
 #  config.toml 已在 .gitignore 中，不会被提交到 GitHub。

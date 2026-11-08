@@ -7,6 +7,7 @@ where python >nul 2>nul
 if errorlevel 1 goto no_python
 
 echo 正在启动 OCS 本地 AI 题库...
+echo 首次运行会自动生成 config.toml，按提示选择模型、粘贴 API Key 即可。
 echo.
 python main.py %*
 set "CODE=%errorlevel%"
