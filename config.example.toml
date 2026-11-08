@@ -1,4 +1,13 @@
 # =============================================================================
+#  配置模板
+#
+#  用法：复制本文件为 config.toml，再填写 api_key：
+#      Windows:  copy config.example.toml config.toml
+#      macOS/Linux:  cp config.example.toml config.toml
+#  config.toml 已在 .gitignore 中，不会被提交到 GitHub。
+# =============================================================================
+
+# =============================================================================
 #  OCS 本地 AI 题库 · 配置文件
 #
 #  最省事的用法：只改 [llm] 里的 provider，再把它对应的 api_key 填上，
@@ -24,13 +33,13 @@ provider = "deepseek"       # deepseek / qwen / zhipu / moonshot / openai / sili
 timeout = 40                # 单次模型调用超时（秒）。OCS 整个请求超时为 60 秒，别设太大
 max_retries = 2
 temperature = 0.1
-max_tokens = 1200
+max_tokens = 1600            # 推理型模型容易写长，留点余量避免 JSON 被截断
 json_mode = true            # 让模型返回 JSON；个别服务不支持时会自动降级重试
 
 # --- DeepSeek ----------------------------------------------------------------
 [llm.providers.deepseek]
 base_url = "https://api.deepseek.com/"
-api_key = "sk-4e563042975a4fae96eda3bdbd929b89"                # 在这里填 sk-xxxxxx
+api_key = ""                # 在这里填 sk-xxxxxx
 model = "deepseek-flash"     # 或 deepseek-reasoner
 vision_model = "deepseek-flash"           # DeepSeek 暂不支持识图，图片题请配下面的通义/智谱
 
@@ -72,7 +81,7 @@ vision_model = "Qwen/Qwen2-VL-72B-Instruct"
 # --- 本地 Ollama -------------------------------------------------------------
 [llm.providers.ollama]
 base_url = "http://127.0.0.1:11434/v1"
-api_key = "ollama"
+api_key = ""
 model = "qwen2.5:7b"
 vision_model = "llava"
 
@@ -82,8 +91,9 @@ vision_model = "llava"
 [vision]
 provider = ""               # 留空沿用 [llm] 的 provider，推荐单独设为 "qwen"
 model = ""                  # 留空使用该 provider 的 vision_model
-max_images = 5              # 单题最多识别几张图（OCS 图片题优化会把题干/选项的图片都传过来）
+max_images = 8              # 单题最多识别几张图（图片选项题经常一张题带五六张，别设太小）
 max_image_bytes = 8388608   # 单张图上限 8MB
+label_images = true         # 给每张图加「第 N 张」编号，让模型能对上 [图片N]
 timeout = 20
 
 # -----------------------------------------------------------------------------
