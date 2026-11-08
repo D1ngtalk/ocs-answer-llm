@@ -553,9 +553,9 @@ class Solver:
                 picked.append(hit)
         if not picked:
             for token in tokens:
-                hit = self._match_option(token, options)
-                if hit is not None and hit not in picked:
-                    picked.append(hit)
+                for hit in self._expand_token(token, options):
+                    if hit not in picked:
+                        picked.append(hit)
 
         if not picked:
             return "", ""
@@ -583,8 +583,10 @@ class Solver:
     def _has_image_options(options) -> bool:
         for opt in options:
             text = (opt.text or "").strip()
+            # 空选项多半是解析噪音（选项文本带换行），不能当成图片题，
+            # 否则会退化成回传字母，字母一错就全错。
             if not text:
-                return True
+                continue
             if _IMAGE_OPTION_RE.search(text):
                 return True
         return False
@@ -606,16 +608,30 @@ class Solver:
             if not item:
                 continue
             # "A、C" / "A,C" / "AC" / "A C" 都拆开
-            pieces = re.split(r"[\s,，、;；/|]+", item)
+            pieces = re.split(r"[\s,，、;；/|#]+", item)
             for piece in pieces:
                 piece = piece.strip().strip("。.")
-                if not piece:
-                    continue
-                if re.fullmatch(r"[A-Za-z]{2,8}", piece):
-                    tokens.extend(list(piece.upper()))
-                else:
+                if piece:
+                    # 这里不拆 "AC" / "int" 这种字母串：先整体去匹配选项文字，
+                    # 匹配不上再按字母拆（见 _expand_token），否则 "int" 会被拆成 I/N/T。
                     tokens.append(piece)
         return tokens
+
+    def _expand_token(self, token: str, options) -> list[tuple[str, str]]:
+        """把一个答案片段展开成若干选项：优先当文字匹配，再退回字母拆分。"""
+        hit = self._match_option(token, options)
+        if hit is not None:
+            return [hit]
+        if re.fullmatch(r"[A-Za-z]{2,8}", token):
+            letters = list(token.upper())
+            found: list[tuple[str, str]] = []
+            for char in letters:
+                match = next((opt for opt in options if opt.label == char), None)
+                if match is None:
+                    return []
+                found.append((match.label, match.raw))
+            return found
+        return []
 
     @staticmethod
     def _match_option(token: str, options) -> tuple[str, str] | None:

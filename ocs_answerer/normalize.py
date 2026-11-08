@@ -117,14 +117,9 @@ def parse_options(options_text: str) -> list[Option]:
     if not options_text:
         return []
     text = clean_text(options_text).replace("\r\n", "\n").replace("\r", "\n")
-    lines = text.split("\n")
-    # 去掉首尾空行，但保留中间的空行：图片选项可能没有文字，
-    # 直接丢弃会让后面的选项整体错位，字母答案就会答错。
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    lines = [line.strip() for line in lines]
+    # 丢掉空行：OCS 用 "\n" 拼接选项文本，某个选项末尾带换行时会出现空行，
+    # 保留它会把后面的选项整体顶偏一位，字母答案就全错了。
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
     if not lines:
         return []
 

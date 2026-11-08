@@ -226,6 +226,21 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(answer.code, 1, answer.msg)
         self.assertEqual(answer.answer, "A. 正确")
 
+    def test_answer_token_forms(self):
+        """模型可能给 A#C、AC、A,C、[A,C]，也可能直接给英文选项内容。"""
+        multi = parse_options("A. 甲\nB. 乙\nC. 丙\nD. 丁")
+        for answer in (["A#C"], ["A,C"], ["AC"], ["A", "C"], ["A、C"]):
+            self.assertEqual(
+                self.solver._resolve({"answer": answer}, multi, "multiple"),
+                ("A#C", "A. 甲#C. 丙"),
+                f"答案形态 {answer} 解析错误",
+            )
+
+        single = parse_options("void\n\ndouble\nint\nchar")
+        self.assertEqual(self.solver._resolve({"answer": ["int"]}, single, "single"), ("C", "int"))
+        self.assertEqual(self.solver._resolve({"answer": ["INT"]}, single, "single"), ("C", "int"))
+        self.assertEqual(self.solver._resolve({"answer": ["C"]}, single, "single"), ("C", "int"))
+
     def test_judgement_word_answer(self):
         """模型直接回「对/错」而不是字母时也要能匹配。"""
         options = parse_options("A. 对\nB. 错")
@@ -349,12 +364,46 @@ class EndToEndTest(unittest.TestCase):
         multi = self.ask("图片选项多选", "A. [图片1]\nB. 乙\nC. [图片3]", "multiple")
         self.assertEqual(multi.answer, "A#C")
 
-    def test_empty_option_keeps_alignment(self):
-        """空选项（纯图片）不能被丢掉，否则后续选项整体错位。"""
-        options = parse_options("A. 甲\n\nC. 丙\nD. 丁")
+    def test_blank_option_lines_are_dropped(self):
+        """某个选项末尾带换行时，OCS 拼出来的选项串里会多一个空行，不能当成第 5 个选项。"""
+        options = parse_options("void\n\ndouble\nint\nchar")
+        self.assertEqual([o.raw for o in options], ["void", "double", "int", "char"])
         self.assertEqual([o.label for o in options], ["A", "B", "C", "D"])
-        self.assertEqual(options[1].text, "")
-        self.assertEqual(options[2].raw, "C. 丙")
+        self.assertEqual(options[2].text, "int")
+
+    def test_empty_option_is_not_image_mode(self):
+        """空选项是解析噪音，不能因此把整题当成图片题回传字母。"""
+        from ocs_answerer.solver import Solver
+
+        options = parse_options("void\n\ndouble\nint\nchar")
+        self.assertFalse(Solver._has_image_options(options))
+
+    def test_stale_entry_with_empty_option_ignored(self):
+        """选项有空项的旧条目会答错（字母错位），必须跳过。"""
+        path = self.bank_dir / "broken.md"
+        path.write_text(
+            "## 在C语言程序中，若对函数类型未加显式说明，则函数的隐含类型为\n\n"
+            "- 类型: single\n"
+            "- 选项:\n"
+            "  - void\n"
+            "  - \n"
+            "  - double\n"
+            "  - int\n"
+            "  - char\n"
+            "- 答案: D\n",
+            encoding="utf-8",
+        )
+        bank = Bank(self.cfg.bank_dir, self.cfg.bank_file)
+        bank.load()
+        entry, _ = bank.lookup(
+            "在C语言程序中，若对函数类型未加显式说明，则函数的隐含类型为",
+            ["void", "double", "int", "char"],
+            qtype="single",
+        )
+        self.assertIsNone(entry, "有空选项的旧条目不能命中")
+        stale = bank.stale_entries()
+        self.assertEqual(len(stale), 1)
+        self.assertTrue(stale[0].options[1] == "")
 
     def test_image_questions_do_not_collide(self):
         """题干是「方程 [图片1] 确定的隐函数 [图片2]」这类套话时，图片不同就是不同的题。"""

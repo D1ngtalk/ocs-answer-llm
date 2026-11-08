@@ -242,6 +242,11 @@ class Bank:
             line = raw_line.strip()
             if not line:
                 continue
+            if line == "-":
+                # 旧版本写出的空选项行（`  - `），还原成空字符串，便于识别为脏数据
+                if section == "options":
+                    options.append("")
+                continue
             if line.startswith("- "):
                 match = _FIELD_RE.match(line)
                 if match:
@@ -326,7 +331,7 @@ class Bank:
             best: BankEntry | None = None
             best_score = 0.0
             for entry in reversed(self._index.get(key, [])):
-                if not self._type_ok(entry, qtype) or self._legacy_image_entry(entry):
+                if not self._type_ok(entry, qtype) or self._is_stale(entry):
                     continue
                 score = self._score(entry, option_list)
                 if score > best_score:
@@ -341,7 +346,7 @@ class Bank:
             for entry in reversed(self._entries):
                 if entry.key == key:
                     continue
-                if not self._type_ok(entry, qtype) or self._legacy_image_entry(entry):
+                if not self._type_ok(entry, qtype) or self._is_stale(entry):
                     continue
                 if not self._length_ok(entry.key, key):
                     continue
@@ -359,9 +364,15 @@ class Bank:
         return None, 0.0
 
     @staticmethod
-    def _legacy_image_entry(entry: BankEntry) -> bool:
-        """旧版/手写的图片题条目没有指纹，键不可靠，直接跳过以免串题。"""
-        return bool(_PLACEHOLDER_RE.search(entry.question)) and not entry.image_hash
+    def _is_stale(entry: BankEntry) -> bool:
+        """旧版本留下的不可靠条目，命中它们只会给错答案，直接跳过。
+
+        1. 题干含 [图片N] 却没有图片指纹 —— 同套话的图片题会互相串；
+        2. 选项里有空项 —— 说明保存时选项列表被空行顶偏了，字母答案整体错一位。
+        """
+        if _PLACEHOLDER_RE.search(entry.question) and not entry.image_hash:
+            return True
+        return any(not (option or "").strip() for option in entry.options)
 
     @staticmethod
     def _type_ok(entry: BankEntry, qtype: str) -> bool:
@@ -459,15 +470,15 @@ class Bank:
 
     # -- 维护 ---------------------------------------------------------------
 
-    def image_entries(self) -> list[BankEntry]:
-        """题干里带 [图片N] 占位符的条目（升级到图片指纹键之前的旧数据需要清理）。"""
+    def stale_entries(self) -> list[BankEntry]:
+        """旧版本留下的不可靠条目（图片题无指纹 / 选项有空项）。"""
         with self._lock:
-            return [e for e in self._entries if _PLACEHOLDER_RE.search(e.question)]
+            return [e for e in self._entries if self._is_stale(e)]
 
-    def purge_image_entries(self, *, dry_run: bool = True) -> list[BankEntry]:
-        """删掉不含图片指纹的旧图片题条目，返回被删（或将被删）的列表。"""
+    def purge_stale(self, *, dry_run: bool = True) -> list[BankEntry]:
+        """删掉不可靠条目，返回被删（或将被删）的列表。"""
         with self._lock:
-            removed = [e for e in self._entries if _PLACEHOLDER_RE.search(e.question)]
+            removed = [e for e in self._entries if self._is_stale(e)]
             if dry_run or not removed:
                 return removed
             removed_ids = {id(e) for e in removed}
