@@ -447,6 +447,13 @@ def run_wizard(
         else:
             echo("[提示] 没有找到 config.example.toml，改用内置默认模板。")
             text = _fallback_template()
+        # 先把模板落盘：中途 Ctrl+C 也不会白跑一趟，config.toml 已经在那儿了，
+        # 下次启动会因为 api_key 为空再进一次向导。
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(f"无法写入配置文件 {path}：{exc}") from exc
     else:
         text = _read_text(path)
 

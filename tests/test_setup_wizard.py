@@ -211,6 +211,19 @@ class WizardTest(unittest.TestCase):
         self.assertIn("[3]", ask.prompts[0], "默认选中配置里现有的服务商")
         self.assertEqual(Config.load(self.path).provider().name, "zhipu")
 
+    def test_template_copied_before_prompts(self):
+        """向导中途被 Ctrl+C 打断，config.toml 也已经存在（就是模板副本）。"""
+
+        def boom(prompt: str, *, secret: bool = False) -> str:
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            run_wizard(self.path, template_path=TEMPLATE, ask=boom, echo=self.output.append)
+
+        self.assertTrue(self.path.exists())
+        self.assertEqual(Config.load(self.path).get("llm.provider"), "deepseek")
+        self.assertIn("#  OCS 本地 AI 题库 · 配置文件", self.path.read_text(encoding="utf-8"))
+
     def test_skip_when_exists_without_force(self):
         self.path.write_text("[llm]\nprovider = \"qwen\"\n", encoding="utf-8")
         with mock.patch("ocs_answerer.setup_wizard._stdin_is_console", return_value=False):
