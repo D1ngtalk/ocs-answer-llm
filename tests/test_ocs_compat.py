@@ -239,6 +239,16 @@ class OCSCompatTest(unittest.TestCase):
         self.assertEqual(resolve_completion(["北京#上海"], 2), ["北京", "上海"])
         self.assertEqual(resolve_completion(["北京"], 1), ["北京"])
 
+    def test_image_options_plain_letter(self):
+        """选项是图片时，OCS 侧的选项文本是图片 URL，只能靠纯字母兜底命中。"""
+        option_texts = [
+            "A. https://cdn.example.com/1.png",
+            "B. https://cdn.example.com/2.png",
+            "C. https://cdn.example.com/3.png",
+        ]
+        self.assertEqual(resolve_single(["B"], option_texts), option_texts[1])
+        self.assertEqual(resolve_multiple(["A#C"], option_texts), [option_texts[0], option_texts[2]])
+
     def test_math_option_not_confused(self):
         """选项内容带数字时，不能把 A/B/C 字母和选项内容搞混。"""
         options = parse_options("A. 2\nB. 3\nC. 4")

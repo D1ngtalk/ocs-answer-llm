@@ -35,6 +35,7 @@ from .normalize import (
 )
 
 _ONE_LINE_RE = re.compile(r"\s+")
+_PLACEHOLDER_RE = re.compile(r"\[\s*图片\s*\d+\s*\]")
 _FIELD_RE = re.compile(r"^-\s*([^:：]{1,12})[:：]\s*(.*)$")
 
 _FIELD_ALIASES = {
@@ -55,7 +56,20 @@ _FIELD_ALIASES = {
     "更新时间": "updated",
     "时间": "updated",
     "updated": "updated",
+    "图片指纹": "image_hash",
+    "图片哈希": "image_hash",
+    "image_hash": "image_hash",
 }
+
+HASH_LEN = 16
+
+
+def make_key(question: str, image_hash: str = "") -> str:
+    """题库主键。题目内容全在图片里时，必须把图片指纹算进去，否则同一套话会共用一个键。"""
+    key = normalize_question(question)
+    if image_hash:
+        return f"{key}#img{image_hash[:HASH_LEN]}"
+    return key
 
 HEADER = """# OCS 本地题库
 
@@ -77,6 +91,8 @@ class BankEntry:
     source: str = "llm"
     updated: str = ""
     file: str = ""
+    # 题干只有 [图片N] 占位符时，把图片指纹并入缓存键
+    image_hash: str = ""
 
     def option_objects(self):
         return parse_options("\n".join(self.options))
@@ -96,6 +112,8 @@ class BankEntry:
         if self.explain:
             lines.append(f"- 解析: {_one_line(self.explain)}")
         lines.append(f"- 来源: {self.source}")
+        if self.image_hash:
+            lines.append(f"- 图片指纹: {self.image_hash[:HASH_LEN]}")
         lines.append(f"- 更新时间: {self.updated or datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         return "\n".join(lines) + "\n"
 
@@ -248,6 +266,9 @@ class Bank:
                     elif name == "updated":
                         section = ""
                         fields["updated"] = value
+                    elif name == "image_hash":
+                        section = ""
+                        fields["image_hash"] = value
                     elif raw_name in ("选项", "options", "Options"):
                         section = "options"
                         if value:
@@ -266,7 +287,7 @@ class Bank:
                 options.append(line)
 
         entry = BankEntry(
-            key=normalize_question(question),
+            key=make_key(question, fields.get("image_hash", "")),
             question=question,
             qtype=fields.get("type", ""),
             options=options,
@@ -276,6 +297,7 @@ class Bank:
             source=fields.get("source", "bank"),
             updated=fields.get("updated", ""),
             file=str(path),
+            image_hash=fields.get("image_hash", ""),
         )
         if not entry.answer_labels and entry.answer_text:
             entry.answer_labels = entry.answer_text
@@ -295,9 +317,7 @@ class Bank:
         ``qtype`` 会参与过滤：同一道题在不同平台/题型下答案可能不同，
         多选绝不能复用单选的缓存。
         """
-        key = normalize_question(question)
-        if not key and image_hash:
-            key = normalize_question(f"图片题 {image_hash[:12]}")
+        key = make_key(question, image_hash)
         if not key:
             return None, 0.0
 
@@ -306,7 +326,7 @@ class Bank:
             best: BankEntry | None = None
             best_score = 0.0
             for entry in reversed(self._index.get(key, [])):
-                if not self._type_ok(entry, qtype):
+                if not self._type_ok(entry, qtype) or self._legacy_image_entry(entry):
                     continue
                 score = self._score(entry, option_list)
                 if score > best_score:
@@ -314,13 +334,14 @@ class Bank:
             if best is not None and best_score >= self.option_threshold:
                 return best, best_score
 
-            if not self.fuzzy or len(key) < 6:
+            # 带图片指纹的键是精确键（题干本身就是 [图片N] 套话），不做模糊匹配
+            if not self.fuzzy or image_hash or len(key) < 6:
                 return None, 0.0
 
             for entry in reversed(self._entries):
                 if entry.key == key:
                     continue
-                if not self._type_ok(entry, qtype):
+                if not self._type_ok(entry, qtype) or self._legacy_image_entry(entry):
                     continue
                 if not self._length_ok(entry.key, key):
                     continue
@@ -336,6 +357,11 @@ class Bank:
             if best is not None and best_score >= self.option_threshold:
                 return best, best_score
         return None, 0.0
+
+    @staticmethod
+    def _legacy_image_entry(entry: BankEntry) -> bool:
+        """旧版/手写的图片题条目没有指纹，键不可靠，直接跳过以免串题。"""
+        return bool(_PLACEHOLDER_RE.search(entry.question)) and not entry.image_hash
 
     @staticmethod
     def _type_ok(entry: BankEntry, qtype: str) -> bool:
@@ -430,6 +456,46 @@ class Bank:
                 return list(reversed(self._entries))[:limit]
             hits = [e for e in self._entries if keyword in e.key]
             return list(reversed(hits))[:limit]
+
+    # -- 维护 ---------------------------------------------------------------
+
+    def image_entries(self) -> list[BankEntry]:
+        """题干里带 [图片N] 占位符的条目（升级到图片指纹键之前的旧数据需要清理）。"""
+        with self._lock:
+            return [e for e in self._entries if _PLACEHOLDER_RE.search(e.question)]
+
+    def purge_image_entries(self, *, dry_run: bool = True) -> list[BankEntry]:
+        """删掉不含图片指纹的旧图片题条目，返回被删（或将被删）的列表。"""
+        with self._lock:
+            removed = [e for e in self._entries if _PLACEHOLDER_RE.search(e.question)]
+            if dry_run or not removed:
+                return removed
+            removed_ids = {id(e) for e in removed}
+            self._entries = [e for e in self._entries if id(e) not in removed_ids]
+            for key, entries in list(self._index.items()):
+                kept = [e for e in entries if id(e) not in removed_ids]
+                if kept:
+                    self._index[key] = kept
+                else:
+                    self._index.pop(key, None)
+            for path, entries in self._by_file.items():
+                self._by_file[path] = [e for e in entries if id(e) not in removed_ids]
+            for path in list(self._by_file):
+                self._backup(path)
+                self._rewrite_file(path)
+            return removed
+
+    @staticmethod
+    def _backup(path: Path) -> Path | None:
+        if not path.exists():
+            return None
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        backup = path.with_name(f"{path.stem}.{stamp}.bak")
+        try:
+            backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            return backup
+        except OSError:
+            return None
 
 
 def _split_options(options: str | list[str]) -> list[str]:

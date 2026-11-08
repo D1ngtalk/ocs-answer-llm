@@ -43,6 +43,8 @@ class ImagePart:
     data_url: str
     sha1: str
     mime: str
+    # 与题干里 [图片N] 的编号一一对应（1 开始）；老版本 OCS 的 DOM 抓图按出现顺序编号
+    index: int = 0
 
     def as_message_part(self) -> dict:
         return {"type": "image_url", "image_url": {"url": self.data_url}}
@@ -137,7 +139,7 @@ def collect_images(
 ) -> list[ImagePart]:
     """把图片地址转成可以直接塞进 messages 的 ImagePart 列表。"""
     parts: list[ImagePart] = []
-    for source in sources:
+    for position, source in enumerate(sources, start=1):
         if len(parts) >= max_images:
             break
         try:
@@ -180,6 +182,7 @@ def collect_images(
                 data_url=f"data:{mime};base64,{b64}",
                 sha1=hashlib.sha1(data).hexdigest(),
                 mime=mime,
+                index=position,
             )
         )
     return parts

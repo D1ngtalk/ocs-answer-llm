@@ -146,6 +146,25 @@ def cmd_check(args) -> int:
 
 def cmd_bank(args) -> int:
     cfg, bank, _ = _bootstrap(args)
+
+    if args.purge_images:
+        found = bank.purge_image_entries(dry_run=True)
+        if not found:
+            print(f"题库共 {bank.stats()['entries']} 条，没有需要清理的图片题条目。")
+            return 0
+        print(f"题库共 {bank.stats()['entries']} 条，其中 {len(found)} 条题干含 [图片N] 占位符：")
+        for entry in found[:50]:
+            print(f"  - {entry.question[:70]}  ({entry.updated or '未知时间'})")
+        if len(found) > 50:
+            print(f"  ... 另有 {len(found) - 50} 条")
+        if not args.yes:
+            print("\n以上仅为预览。这些是旧版本按题干缓存的图片题，答案可能串题。")
+            print("确认删除请加 --yes（删除前会自动在同目录生成 .bak 备份）。")
+            return 0
+        bank.purge_image_entries(dry_run=False)
+        print(f"\n已删除 {len(found)} 条，原文件已备份为同目录下的 .bak 文件。")
+        return 0
+
     entries = bank.search(args.query or "", limit=args.limit)
     print(f"题库共 {bank.stats()['entries']} 条，显示 {len(entries)} 条：")
     for entry in entries:
@@ -188,6 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
     bank = sub.add_parser("bank", help="查看题库")
     bank.add_argument("-q", "--query", default="", help="按关键词过滤")
     bank.add_argument("-n", "--limit", type=int, default=20, help="显示条数")
+    bank.add_argument(
+        "--purge-images",
+        action="store_true",
+        help="清理题干含 [图片N] 的旧图片题条目（先预览，加 --yes 才删除）",
+    )
+    bank.add_argument("--yes", action="store_true", help="配合 --purge-images 真正执行删除")
     bank.set_defaults(func=cmd_bank)
     return parser
 

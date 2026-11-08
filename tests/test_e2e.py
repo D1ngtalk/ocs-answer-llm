@@ -43,6 +43,23 @@ class MockLLM(BaseHTTPRequestHandler):
             text = str(content)
         matched = re.search(r"题目：\n(.*?)(?:\n\n|\Z)", text, re.S)
         question = matched.group(1) if matched else text
+        user_turns = sum(1 for message in payload["messages"] if message.get("role") == "user")
+
+        if "纯推理" in question:
+            # 第一次只吐思考链，被要求「修复」后才给 JSON
+            if user_turns <= 1:
+                body = self._reply(payload, content="We need answer single choice. Let me think about the options...")
+                return self._send(body)
+            answer = {"answer": ["B"], "answers": [], "confidence": 0.9, "need_search": False}
+            return self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
+        if "推理链含JSON" in question:
+            # content 为空，JSON 藏在 reasoning_content 里
+            body = self._reply(
+                payload,
+                content="",
+                reasoning_content='{"answer": ["B"], "answers": [], "confidence": 0.88, "need_search": false}',
+            )
+            return self._send(body)
 
         if "多选" in question:
             answer = {"answer": ["A", "C"], "answers": [], "confidence": 0.9, "need_search": False, "reason": "多选"}
@@ -57,14 +74,23 @@ class MockLLM(BaseHTTPRequestHandler):
         else:
             answer = {"answer": ["B"], "answers": [], "confidence": 0.95, "need_search": False, "reason": "世界和平"}
 
-        body = json.dumps(
+        self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
+
+    @staticmethod
+    def _reply(payload: dict, *, content: str, reasoning_content: str = "") -> bytes:
+        message = {"role": "assistant", "content": content}
+        if reasoning_content:
+            message["reasoning_content"] = reasoning_content
+        return json.dumps(
             {
                 "id": "mock",
                 "model": payload.get("model", "mock"),
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)}}],
+                "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
             },
             ensure_ascii=False,
         ).encode("utf-8")
+
+    def _send(self, body: bytes) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -133,9 +159,28 @@ class EndToEndTest(unittest.TestCase):
         self.bank.load()
         self.solver = Solver(self.cfg, self.bank)
 
-    def ask(self, title, options="", qtype="", **kwargs):
-        request = SearchRequest(title=title, options=options, qtype=qtype)
+    def ask(self, title, options="", qtype="", images=None, **kwargs):
+        request = SearchRequest(title=title, options=options, qtype=qtype, images=list(images or []))
         return self.solver.solve(request, **kwargs)
+
+    @staticmethod
+    def png_data_url(seed: int) -> str:
+        import base64
+        import struct
+        import zlib
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            body = struct.pack(">I", len(data)) + tag + data
+            return body + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        raw = b"".join(b"\x00" + bytes([seed, 0, 0]) * 2 for _ in range(2))
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b"")
+        )
+        return "data:image/png;base64," + base64.b64encode(png).decode()
 
     # -- 用例 ---------------------------------------------------------------
 
@@ -278,6 +323,104 @@ class EndToEndTest(unittest.TestCase):
             "如图[图片1]所示，选择正确答案",
         )
 
+    def test_reasoning_only_then_repair(self):
+        """模型把思考链当正文输出时，应自动修复一轮。"""
+        answer = self.ask("这道纯推理题", "A. 甲\nB. 乙\nC. 丙", "single")
+        self.assertEqual(answer.code, 1, answer.msg)
+        self.assertEqual(answer.answer, "B. 乙")
+        self.assertGreaterEqual(len(MockLLM.calls), 2, "应触发 JSON 修复轮")
+
+    def test_json_inside_reasoning_content(self):
+        """content 为空、JSON 藏在 reasoning_content 里时也要能取到。"""
+        answer = self.ask("这道推理链含JSON的题", "A. 甲\nB. 乙\nC. 丙", "single")
+        self.assertEqual(answer.code, 1, answer.msg)
+        self.assertEqual(answer.answer, "B. 乙")
+        self.assertEqual(len(MockLLM.calls), 1, "JSON 就在推理内容里，无需再修复")
+
+    def test_image_options_use_letters(self):
+        """选项是图片时回传字母，否则 OCS 侧（选项文本是图片 URL）匹配不上。"""
+        single = self.ask("图片选项题", "A. 甲\nB. [图片2]\nC. 丙", "single")
+        self.assertEqual(single.answer, "B")
+        self.assertEqual(single.labels, "B")
+
+        multi = self.ask("图片选项多选", "A. [图片1]\nB. 乙\nC. [图片3]", "multiple")
+        self.assertEqual(multi.answer, "A#C")
+
+    def test_empty_option_keeps_alignment(self):
+        """空选项（纯图片）不能被丢掉，否则后续选项整体错位。"""
+        options = parse_options("A. 甲\n\nC. 丙\nD. 丁")
+        self.assertEqual([o.label for o in options], ["A", "B", "C", "D"])
+        self.assertEqual(options[1].text, "")
+        self.assertEqual(options[2].raw, "C. 丙")
+
+    def test_image_questions_do_not_collide(self):
+        """题干是「方程 [图片1] 确定的隐函数 [图片2]」这类套话时，图片不同就是不同的题。"""
+        title = "方程 [图片1] 确定的隐函数 [图片2]"
+        options = "A. [图片3]\nB. [图片4]\nC. [图片5]\nD. [图片6]"
+
+        first = self.ask(title, options, "single", images=[self.png_data_url(1)])
+        self.assertEqual(first.code, 1, first.msg)
+        self.assertFalse(first.cached)
+
+        other = self.ask(title, options, "single", images=[self.png_data_url(2)])
+        self.assertFalse(other.cached, "换了图片必须当成新题")
+        self.assertEqual(len(MockLLM.calls), 2)
+
+        again = self.ask(title, options, "single", images=[self.png_data_url(1)])
+        self.assertTrue(again.cached, "同一组图片应命中")
+
+        text = (self.bank_dir / "default.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count("- 图片指纹:"), 2)
+
+    def test_image_only_question_cached(self):
+        options = "A. [图片2]\nB. [图片3]"
+        question = " [图片1] "
+        first = self.ask(question, options, "single", images=[self.png_data_url(7)])
+        self.assertFalse(first.cached)
+        second = self.ask(question, options, "single", images=[self.png_data_url(7)])
+        self.assertTrue(second.cached)
+        self.assertEqual(first.answer, second.answer)
+
+    def test_legacy_image_entry_ignored(self):
+        """没有图片指纹的旧图片题条目不能被命中（否则会串题）。"""
+        path = self.bank_dir / "legacy.md"
+        path.write_text(
+            "## 方程 [图片1] 确定的隐函数 [图片2]\n\n"
+            "- 类型: single\n"
+            "- 选项:\n"
+            "  - [图片3]\n"
+            "  - [图片4]\n"
+            "- 答案: A\n",
+            encoding="utf-8",
+        )
+        bank = Bank(self.cfg.bank_dir, self.cfg.bank_file)
+        bank.load()
+        entry, _ = bank.lookup(
+            "方程 [图片1] 确定的隐函数 [图片2]", ["[图片3]", "[图片4]"], qtype="single"
+        )
+        self.assertIsNone(entry, "无指纹的旧条目应被忽略")
+
+        # 补上指纹后就能命中
+        path.write_text(
+            "## 方程 [图片1] 确定的隐函数 [图片2]\n\n"
+            "- 类型: single\n"
+            "- 选项:\n"
+            "  - [图片3]\n"
+            "  - [图片4]\n"
+            "- 答案: A\n"
+            "- 图片指纹: abc123abc123abc1\n",
+            encoding="utf-8",
+        )
+        bank.load()
+        entry2, score = bank.lookup(
+            "方程 [图片1] 确定的隐函数 [图片2]",
+            ["[图片3]", "[图片4]"],
+            qtype="single",
+            image_hash="abc123abc123abc1deadbeef",
+        )
+        self.assertIsNotNone(entry2)
+        self.assertEqual(entry2.answer_text, "[图片3]")
+
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
         port = server.server_address[1]
@@ -310,6 +453,28 @@ class EndToEndTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class JsonExtractTest(unittest.TestCase):
+    """模型输出千奇百怪，JSON 提取要尽量宽容。"""
+
+    def test_variants(self):
+        from ocs_answerer.llm import extract_json
+
+        self.assertEqual(extract_json('{"answer":["A"]}')["answer"], ["A"])
+        self.assertEqual(extract_json('```json\n{"answer":["B"]}\n```')["answer"], ["B"])
+        self.assertEqual(extract_json('说明文字\n<json>{"answer":["C"]}</json>')["answer"], ["C"])
+        self.assertEqual(extract_json("我觉得是 {'answer': ['D'], 'confidence': 0.8}")["answer"], ["D"])
+        self.assertEqual(extract_json('{"answer": ["A"],}')["answer"], ["A"])
+        self.assertEqual(
+            extract_json('先分析一下。\n最终结果：\n{"answer": ["B"], "answers": []}\n以上。')["answer"], ["B"]
+        )
+
+    def test_reject_plain_text(self):
+        from ocs_answerer.llm import LLMError, extract_json
+
+        with self.assertRaises(LLMError):
+            extract_json("We need answer single choice. Need parse images.")
 
 
 class NormalizeTest(unittest.TestCase):

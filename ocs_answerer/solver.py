@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .bank import Bank, BankEntry
+from .bank import Bank, BankEntry, make_key
 from .config import Config
 from .llm import LLMClient, LLMError
 from .normalize import (
@@ -54,7 +54,14 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 4. 填空题：answers 里给出可以直接填入的文本；有多个空时按顺序给出；计算题只给最终结果，不要写过程。
 5. 如果题目只有图片，请先仔细识别图片中的文字、公式或图表，再作答。
 6. 如果信息不足（例如题目说"如图"但没有提供图片），降低 confidence 并在 reason 中说明。
-7. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。"""
+7. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。
+8. 不要输出思考过程、逐项分析或任何前言后语。即使需要推理，也只把结论写进 JSON 字段里。"""
+
+# 选项带图片时，补一句提示，避免模型在图片编号上打转
+_IMAGE_OPTION_HINT = (
+    "部分选项或题干内容是图片（表现为 [图片1]、[图片2] 这样的占位符），"
+    "请把占位符和随附的图片按编号对应起来再判断；看不清就按最合理的推断作答并降低 confidence。"
+)
 
 
 _TIME_HINTS = (
@@ -64,6 +71,11 @@ _TIME_HINTS = (
     "新闻", "时事", "热点", "刚刚", "截至", "统计数据",
 )
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}\s*年")
+
+# 选项本身是图片时的特征：占位符、data URL、图片链接、空选项
+_IMAGE_OPTION_RE = re.compile(
+    r"\[\s*图片\s*\d+\s*\]|data:image/|^(?:https?:)?//", re.I
+)
 
 
 @dataclass
@@ -183,6 +195,15 @@ class Solver:
             timeout=float(self.cfg.get("vision.timeout", 20)),
         )
         fingerprint = images_fingerprint(images)
+        # 题干里的 [图片N] 说明题目内容主要在图片上（如数学公式题），
+        # 这时必须把图片指纹并入缓存键，否则「[图片1] ，求 [图片2]」这种套话会全部撞键。
+        has_placeholder = bool(re.search(r"\[\s*图片\s*\d+\s*\]", request.title or ""))
+        image_key = (
+            fingerprint
+            if fingerprint
+            and (has_placeholder or not question or len(normalize_question(question)) < 6)
+            else ""
+        )
         # 纯图片题没有文字题干，用一个可读的占位名展示
         display = question or (
             f"[图片题] {fingerprint[:12]}" if fingerprint else (request.title or "（无题干）")
@@ -192,7 +213,7 @@ class Solver:
         entry, score = (None, 0.0)
         if use_cache:
             entry, score = self.bank.lookup(
-                question, option_lines, image_hash=fingerprint, qtype=request.qtype
+                display, option_lines, image_hash=image_key, qtype=request.qtype
             )
         if entry is not None and entry.answer_text:
             self._bump("cache_hits")
@@ -215,7 +236,7 @@ class Solver:
         with self._lock_for(lock_key):
             if use_cache:
                 entry, score = self.bank.lookup(
-                    question, option_lines, image_hash=fingerprint, qtype=request.qtype
+                    display, option_lines, image_hash=image_key, qtype=request.qtype
                 )
             if entry is not None and entry.answer_text:
                 self._bump("cache_hits")
@@ -239,6 +260,7 @@ class Solver:
                     display=display,
                     options=options,
                     images=images,
+                    image_key=image_key,
                     started=started,
                 )
             except LLMError as exc:
@@ -271,6 +293,7 @@ class Solver:
         display: str,
         options,
         images: list[ImagePart],
+        image_key: str,
         started: float,
     ) -> Answer:
         deadline = started + float(self.cfg.get("behavior.total_timeout", 55))
@@ -336,10 +359,8 @@ class Solver:
 
         source = "llm+web" if search_results else "llm"
         explain = str(result.get("reason") or "").strip()
-        fingerprint = images_fingerprint(images)
-        image_key = normalize_question(f"图片题 {fingerprint[:12]}") if fingerprint else ""
         entry = BankEntry(
-            key=normalize_question(question) or image_key,
+            key=make_key(display, image_key),
             question=display,
             qtype=qtype,
             options=[opt.raw for opt in options],
@@ -347,6 +368,7 @@ class Solver:
             answer_text=answer_text,
             explain=explain,
             source=source,
+            image_hash=image_key,
         )
         saved = False
         save_enabled = bool(self.cfg.get("behavior.save_to_bank", True))
@@ -394,25 +416,64 @@ class Solver:
         reference: str = "",
         corrective: str = "",
     ) -> dict[str, Any]:
-        user_text = self._build_user_prompt(question, options, qtype, reference, corrective, len(images))
+        client = self.vision_llm if images else None
+        if images and client is None:
+            log.warning("未配置视觉模型，题目中的 %s 张图片将被忽略", len(images))
+        sent_images = images if client is not None else []
+        note = self._image_note(sent_images, question, options, unsupported=bool(images) and client is None)
+        user_text = self._build_user_prompt(question, options, qtype, reference, corrective, note)
         messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        if images:
-            client = self.vision_llm
-            if client is None:
-                log.warning("未配置视觉模型，题目中的 %s 张图片将被忽略", len(images))
-                messages.append({"role": "user", "content": user_text})
-            else:
-                content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
-                content.extend(part.as_message_part() for part in images)
-                messages.append({"role": "user", "content": content})
-                self._bump("llm_calls")
-                return self._call(client, messages, deadline)
-        else:
-            messages.append({"role": "user", "content": user_text})
+        if sent_images and client is not None:
+            content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+            # 给每张图加一句编号说明，模型才能把 [图片N] 和图片对上
+            label_images = bool(self.cfg.get("vision.label_images", True))
+            for position, part in enumerate(sent_images, start=1):
+                number = part.index or position
+                if label_images:
+                    content.append(
+                        {"type": "text", "text": f"第 {number} 张图片（对应题干里的 [图片{number}]）："}
+                    )
+                content.append(part.as_message_part())
+            messages.append({"role": "user", "content": content})
+            self._bump("llm_calls")
+            return self._call(client, messages, deadline)
 
+        messages.append({"role": "user", "content": user_text})
         self._bump("llm_calls")
         return self._call(self.llm, messages, deadline)
+
+    @staticmethod
+    def _image_note(sent: list[ImagePart], question: str, options, *, unsupported: bool = False) -> str:
+        """告诉模型哪些 [图片N] 真的随请求发出去了，缺图的不要瞎猜。"""
+        options_text = format_options_for_prompt(options) if options else ""
+        referenced = sorted(
+            {int(match) for match in re.findall(r"\[\s*图片\s*(\d+)\s*\]", f"{question}\n{options_text}")}
+        )
+        if sent:
+            available = [part.index or position for position, part in enumerate(sent, start=1)]
+            note = (
+                f"说明：本题随附 {len(sent)} 张图片，编号为 "
+                + "、".join(f"[图片{index}]" for index in available)
+                + "，请按编号与题干/选项对应。"
+                + _IMAGE_OPTION_HINT
+            )
+            missing = [index for index in referenced if index not in available]
+            if missing:
+                note += (
+                    " 注意："
+                    + "、".join(f"[图片{index}]" for index in missing)
+                    + " 本次未能获取，涉及它们的判断请降低 confidence。"
+                )
+            return note
+        if referenced:
+            if unsupported:
+                return (
+                    "注意：题干引用了图片（如 [图片1]），但当前没有配置识图模型，图片无法识别。"
+                    "请仅根据文字作答，并显著降低 confidence。"
+                )
+            return "注意：题干引用了图片（如 [图片1]），但本次没有收到图片，请仅根据文字作答并降低 confidence。"
+        return ""
 
     def _call(self, client: LLMClient, messages: list[dict[str, Any]], deadline: float) -> dict[str, Any]:
         remaining = deadline - time.monotonic()
@@ -428,7 +489,7 @@ class Solver:
         qtype: str,
         reference: str,
         corrective: str,
-        image_count: int = 0,
+        image_note: str = "",
     ) -> str:
         parts: list[str] = [
             f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -437,10 +498,8 @@ class Solver:
             "题目：",
             question or "（题目内容为空，请以图片为准）",
         ]
-        if image_count:
-            parts.append(
-                f"说明：本题随附 {image_count} 张图片，题干/选项中的 [图片1]、[图片2] 依次对应第 1、2 张图片。"
-            )
+        if image_note:
+            parts += ["", image_note]
         if options:
             parts += ["", "选项（作答时请使用每行开头的字母）：", format_options_for_prompt(options)]
         else:
@@ -456,7 +515,7 @@ class Solver:
             ]
         if corrective:
             parts += ["", f"【修正要求】{corrective}"]
-        parts += ["", "请只输出 JSON。"]
+        parts += ["", "请直接输出 JSON（以 { 开头、以 } 结尾），不要输出推理过程、分析步骤或 Markdown。"]
         return "\n".join(parts)
 
     # -- 答案解析 -----------------------------------------------------------
@@ -501,16 +560,34 @@ class Solver:
         if not picked:
             return "", ""
 
+        # 选项是图片时，OCS 侧的选项文本是图片 URL（或空），回传选项原文匹配不上，
+        # 只能回传字母，走 OCS 的「纯 ABCD 兜底」按序号选取。
+        image_mode = qtype in ("single", "multiple") and self._has_image_options(options)
+
         if qtype in ("single", "judgement"):
             label, raw = picked[0]
+            if image_mode:
+                return label, label
             return label, raw
 
         # 多选：按选项顺序输出，用 OCS 的分隔符 #
         order = {opt.label: index for index, opt in enumerate(options)}
         picked.sort(key=lambda item: order.get(item[0], 99))
         labels = "#".join(label for label, _ in picked)
+        if image_mode:
+            return labels, labels
         text = "#".join(raw for _, raw in picked)
         return labels, text
+
+    @staticmethod
+    def _has_image_options(options) -> bool:
+        for opt in options:
+            text = (opt.text or "").strip()
+            if not text:
+                return True
+            if _IMAGE_OPTION_RE.search(text):
+                return True
+        return False
 
     @staticmethod
     def _tokens(raw: Any) -> list[str]:
@@ -542,15 +619,13 @@ class Solver:
 
     @staticmethod
     def _match_option(token: str, options) -> tuple[str, str] | None:
-        # 1) 纯字母
+        # 1) 纯字母：只按选项自带的字母匹配，不做「第 N 个」兜底
+        #    （选项行若有缺失，按序号猜会整体错位，宁可不答）
         if re.fullmatch(r"[A-Za-z]", token):
             label = token.upper()
             for opt in options:
                 if opt.label == label:
                     return opt.label, opt.raw
-            index = ord(label) - ord("A")
-            if 0 <= index < len(options):
-                return options[index].label, options[index].raw
             return None
 
         # 2) "A. 内容" 形式

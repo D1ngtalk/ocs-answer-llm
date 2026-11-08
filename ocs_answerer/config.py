@@ -76,14 +76,15 @@ DEFAULTS: dict[str, Any] = {
         "timeout": 40,
         "max_retries": 2,
         "temperature": 0.1,
-        "max_tokens": 1200,
+        "max_tokens": 1600,
         "json_mode": True,
         "providers": DEFAULT_PROVIDERS,
     },
     "vision": {
         "provider": "",  # 留空表示沿用 llm.provider
         "model": "",  # 留空表示使用该 provider 的 vision_model
-        "max_images": 5,
+        "max_images": 8,
+        "label_images": True,
         "max_image_bytes": 8 * 1024 * 1024,
         "timeout": 20,
     },
@@ -139,7 +140,7 @@ class Provider:
     json_mode: bool = True
     timeout: float = 40.0
     temperature: float = 0.1
-    max_tokens: int = 1200
+    max_tokens: int = 1600
     extra_headers: dict[str, str] = field(default_factory=dict)
     extra_body: dict[str, Any] = field(default_factory=dict)
 
@@ -237,7 +238,7 @@ class Config:
             json_mode=bool(raw.get("json_mode", True)),
             timeout=float(raw.get("timeout") or 40),
             temperature=float(raw.get("temperature") or 0.1),
-            max_tokens=int(raw.get("max_tokens") or 1200),
+            max_tokens=int(raw.get("max_tokens") or 1600),
             extra_headers=dict(raw.get("extra_headers") or {}),
             extra_body=dict(raw.get("extra_body") or {}),
         )
