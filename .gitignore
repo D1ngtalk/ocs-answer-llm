@@ -10,3 +10,4 @@ data/bank/*.md
 !data/bank/.gitkeep
 ocs-config.local.json
 *.tmp
+./workbuddy
