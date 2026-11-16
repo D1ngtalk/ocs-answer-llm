@@ -299,6 +299,8 @@ class LLMClient:
 
         attempt = 0
         last_error: LLMError | None = None
+        # 思考过程吃光 max_tokens 时，关掉思考再试一次（不占用重试次数）
+        thinking_fallback_used = False
         while attempt <= retries:
             attempt += 1
             call_timeout = float(timeout or self.provider.timeout)
@@ -311,7 +313,44 @@ class LLMClient:
                 data = _post_json(self.endpoint, payload, headers, call_timeout)
                 content, reasoning, finish_reason = self._content_parts(data)
                 if finish_reason == "length":
-                    log.warning("模型输出被 max_tokens 截断，考虑调大 llm.max_tokens")
+                    usage = data.get("usage") or {}
+                    details = usage.get("completion_tokens_details") or {}
+                    log.warning(
+                        "模型输出被 max_tokens 截断（正文 %s 字，推理 %s 字，推理 token %s）",
+                        len(content),
+                        len(reasoning),
+                        details.get("reasoning_tokens", "?"),
+                    )
+                thinking_on = (
+                    isinstance(payload.get("thinking"), dict)
+                    and payload["thinking"].get("type") == "enabled"
+                )
+                # 推理内容完整可用时（未截断、且允许兜底）就没必要重试
+                can_use_reasoning = bool(reasoning) and fallback_reasoning and finish_reason != "length"
+                if not content and thinking_on and not thinking_fallback_used and not can_use_reasoning:
+                    # DeepSeek 的 max_tokens 包含 reasoning_tokens：思考太长时正文一个字都写不出来。
+                    # 关掉思考重来一次，既快又不会把预算浪费在推理上。
+                    thinking_fallback_used = True
+                    if deadline is not None and deadline - time.monotonic() < 6:
+                        log.warning("剩余时间不足，跳过「关闭思考重试」")
+                    else:
+                        if finish_reason == "length":
+                            log.warning(
+                                "思考过程占满了 max_tokens（推理 %s 字、正文 0 字），关闭思考后重试一次",
+                                len(reasoning),
+                            )
+                        else:
+                            log.warning(
+                                "模型只给了推理内容（%s 字）没有正文，关闭思考后重试一次",
+                                len(reasoning),
+                            )
+                        payload["thinking"] = {"type": "disabled"}
+                        payload.pop("reasoning_effort", None)
+                        payload["temperature"] = (
+                            self.provider.temperature if temperature is None else temperature
+                        )
+                        attempt -= 1
+                        continue
                 if content:
                     return content
                 if reasoning:
@@ -411,6 +450,8 @@ class LLMClient:
                 retries=0,
                 deadline=deadline,
                 fallback_reasoning=True,
+                # 只是把已有内容整理成 JSON，不需要再思考一遍
+                thinking=False,
             )
             try:
                 return extract_json(fixed)

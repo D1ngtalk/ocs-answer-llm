@@ -46,6 +46,33 @@ class MockLLM(BaseHTTPRequestHandler):
         question = matched.group(1) if matched else text
         user_turns = sum(1 for message in payload["messages"] if message.get("role") == "user")
 
+        if "长思考" in question:
+            # 模拟 DeepSeek：max_tokens 包含 reasoning_tokens，思考太长时正文为空
+            if (payload.get("thinking") or {}).get("type") != "disabled":
+                body = json.dumps(
+                    {
+                        "id": "mock",
+                        "model": payload.get("model", "mock"),
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "reasoning_content": "We need answer. " + "先想一想这个问题。" * 200,
+                                },
+                                "finish_reason": "length",
+                            }
+                        ],
+                        "usage": {"completion_tokens_details": {"reasoning_tokens": 1600}},
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                return self._send(body)
+            answer = {"checks": {"A": False, "B": True}, "answer": ["B"], "answers": [],
+                      "confidence": 0.9, "need_search": False}
+            return self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
+
         if "纯推理" in question:
             # 第一次只吐思考链，被要求「修复」后才给 JSON
             if user_turns <= 1:
@@ -365,6 +392,23 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(answer.code, 1, answer.msg)
         self.assertEqual(answer.answer, "B. 乙")
         self.assertGreaterEqual(len(MockLLM.calls), 2, "应触发 JSON 修复轮")
+        self.assertEqual(
+            (MockLLM.calls[-1].get("thinking") or {}).get("type"),
+            "disabled",
+            "修复轮不该再浪费 token 思考",
+        )
+
+    def test_truncated_thinking_retries_without_thinking(self):
+        """思考吃满 max_tokens、正文为空时，自动关闭思考重试一次。"""
+        answer = self.ask("这道长思考的题", "A. 甲\nB. 乙", "single")
+        self.assertEqual(answer.code, 1, answer.msg)
+        self.assertEqual(answer.answer, "B. 乙")
+
+        self.assertEqual(len(MockLLM.calls), 2, "第一次截断后应只补一次")
+        types = [(call.get("thinking") or {}).get("type") for call in MockLLM.calls]
+        self.assertEqual(types, ["enabled", "disabled"])
+        self.assertNotIn("reasoning_effort", MockLLM.calls[1], "关闭思考后不再发强度")
+        self.assertIn("temperature", MockLLM.calls[1], "关闭思考后要补回 temperature")
 
     def test_json_inside_reasoning_content(self):
         """content 为空、JSON 藏在 reasoning_content 里时也要能取到。"""

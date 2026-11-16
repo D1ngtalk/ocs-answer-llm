@@ -407,6 +407,9 @@ curl "http://127.0.0.1:8000/api/search?title=1%2B1%3D%3F&options=A.%201%0AB.%202
 **Q：一直返回 code 0，日志里是 401 / 403。**
 Key 不对或没充值。跑 `python main.py check` 看具体报错。
 
+**Q：日志出现「模型输出被 max_tokens 截断」，简单题也答不出来？**
+DeepSeek 的 `max_tokens` **包含思考（reasoning）token**，个别题目模型会先写几千字推理，把 1600 的额度吃光，正文一个字都没输出。现在检测到「正文为空 + 推理占满」会自动关闭思考、重试一次（约 1 秒出结果），日志里会看到两行 warning，但答案正常。想彻底避免可以设 `llm.thinking = "off"`，或把 `llm.max_tokens` 调大（不推荐，简单题为此多付 token 不划算）。
+
 **Q：答案明显不对。**
 先看 `data/logs/ocs.log` 里模型给的理由。常见原因是题干图片没抓到（平台把图片放在 iframe 或 canvas 里），可以调 `image` handler 的选择器；纯文本题出错可以换更强的模型。
 
