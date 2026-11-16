@@ -659,6 +659,16 @@ class EndToEndTest(unittest.TestCase):
         answer = self.ask("这道填空题为文字", "", "completion")
         self.assertEqual(answer.answer, "北京#上海")
 
+    def test_word_bank_image_changes_key(self):
+        """同一题干但词库图片不同，字母答案会错位，必须当成两道题。"""
+        title = "选词填空：请将正确答案的字母填在横线上"
+        first = self.ask(title, "", "completion", images=[self.png_data_url(21)])
+        self.assertEqual(first.answer, "A#C#B")
+        other = self.ask(title, "", "completion", images=[self.png_data_url(22)])
+        self.assertFalse(other.cached, "换了词库图片必须重新作答")
+        again = self.ask(title, "", "completion", images=[self.png_data_url(21)])
+        self.assertTrue(again.cached, "同一张词库图应命中")
+
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)
         port = server.server_address[1]

@@ -211,12 +211,15 @@ class Solver:
         # 题干里的 [图片N] 说明题目内容主要在图片上（如数学公式题），
         # 这时必须把图片指纹并入缓存键，否则「[图片1] ，求 [图片2]」这种套话会全部撞键。
         has_placeholder = bool(re.search(r"\[\s*图片\s*\d+\s*\]", request.title or ""))
-        image_key = (
-            fingerprint
-            if fingerprint
-            and (has_placeholder or not question or len(normalize_question(question)) < 6)
-            else ""
+        # 填空题的图片通常是词库/公式，答案依赖图片内容（选词填空的字母就是词库顺序），
+        # 所以只要带图就并入指纹，避免换了词库还命中旧答案。
+        image_dependent = (
+            has_placeholder
+            or not question
+            or len(normalize_question(question)) < 6
+            or request.qtype == "completion"
         )
+        image_key = fingerprint if fingerprint and image_dependent else ""
         # 纯图片题没有文字题干，用一个可读的占位名展示
         display = question or (
             f"[图片题] {fingerprint[:12]}" if fingerprint else (request.title or "（无题干）")

@@ -438,6 +438,9 @@ class Bank:
                 return "updated"
 
             entry.file = str(self.default_file)
+            # 新写入的条目一定会在 md 里写「答案内容」，同步标记，
+            # 否则同进程内它会被 _is_stale 当成「旧版填空题」而无法命中。
+            entry.answer_text_set = bool(entry.answer_text)
             self.directory.mkdir(parents=True, exist_ok=True)
             new_file = not self.default_file.exists()
             with self.default_file.open("a", encoding="utf-8", newline="\n") as fh:
