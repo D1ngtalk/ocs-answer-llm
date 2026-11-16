@@ -36,6 +36,7 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
   "checks": {"A": true, "B": false, "C": true, "D": false},
   "answer": ["A", "C"],
   "answers": [],
+  "answer_form": "text",
   "confidence": 0.92,
   "need_search": false,
   "search_query": "",
@@ -46,6 +47,9 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 - checks：选择题/判断题必须填写。把**每一个**选项字母都列出来，逐个判断它是否成立，true 表示成立、false 表示不成立，不要省略任何一项。
 - answer：正确选项的字母数组，必须与 checks 中为 true 的项完全一致，按字母顺序排列。
 - answers：填空题的答案，每个空一个字符串，按空的顺序排列；非填空题留空数组。
+- answer_form：填空题回答的是「具体内容」还是「选项字母」。
+  * "text"（默认）：空里要填单词、短语、数字、公式等具体内容。
+  * "letters"：题目是选词填空 / 词库匹配，空里要求填的是选项字母——题干写着「将字母填在横线上」，或英文题里的 banked cloze / word bank / write the letters / choose from the box，又或词库图片里每个单词前标着 A、B、C…。此时 answers 里放每个空对应的字母（如 ["A","C","B"]），并在 reason 里写出「字母=单词」的对应关系方便核对。
 - confidence：0 到 1 之间的小数，表示你对答案的把握。
 - need_search：答案是否依赖最新信息（新闻、实时数据、赛事结果、人事变动、价格、版本发布等）。拿不准时设为 true。
 - search_query：need_search 为 true 时，给出适合搜索引擎的简短检索词（不超过 20 字，不要写"最新""请问"这类废话）。
@@ -56,11 +60,12 @@ SYSTEM_PROMPT = """你是一个严谨的答题引擎，负责解答网课与考�
 2. 多选题（type=multiple）：这类题通常有 2 个以上正确项。如果 checks 里只有一个 true，请再逐条核对一遍——尤其是表述相近的选项（如「社会进步」与「社会发展」、「现实可能性」与「历史发展规律」），不要因为相似就排除其一，要按教材口径分别判断，确认只有一个成立才只给一个。
 3. 单选题（type=single）：正确答案只有一个，checks 中应恰好有一个 true。选项正好两个且是「对／错」性质时按判断题处理。
 4. 判断题按选项字母作答，注意 A/B 对应的实际选项文字，不要想当然。
-5. 填空题：answers 里给出可以直接填入的文本；有多个空时按顺序给出；计算题只给最终结果，不要写过程。
-6. 如果题目只有图片，请先仔细识别图片中的文字、公式或图表，再作答。
-7. 如果信息不足（例如题目说"如图"但没有提供图片），降低 confidence 并在 reason 中说明。
-8. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。
-9. 不要输出思考过程、逐项分析或任何前言后语。即使需要推理，也只把结论写进 JSON 字段里。"""
+5. 填空题：answers 里给出可以直接填入的内容，有多个空时按顺序给出；计算题只给最终结果，不要写过程。**英语选词填空要特别注意**：如果词库是图片、答题处要求填选项字母，把 answer_form 设为 "letters"，answers 填字母（如 A、C、B），不要填单词本身；如果答题处是直接填单词，则保持 "text" 填单词。
+6. 填空题可能有多个空，数量以题干中的空格/编号为准；不确定时宁可少填，也不要把同一个答案重复多遍。
+7. 如果题目只有图片，请先仔细识别图片中的文字、公式或图表，再作答。
+8. 如果信息不足（例如题目说"如图"但没有提供图片），降低 confidence 并在 reason 中说明。
+9. 不要编造事实。涉及时效性内容且你无法确定时，把 need_search 设为 true。
+10. 不要输出思考过程、逐项分析或任何前言后语。即使需要推理，也只把结论写进 JSON 字段里。"""
 
 # 选项带图片时，补一句提示，避免模型在图片编号上打转
 _IMAGE_OPTION_HINT = (
@@ -529,7 +534,13 @@ class Solver:
             elif qtype == "single":
                 parts.append("本题是单选题：checks 中只应有一个 true。")
         else:
-            parts += ["", "本题没有提供选项，请按填空/简答处理，把答案文本放进 answers。"]
+            hint = "本题没有提供选项，请按填空/简答处理，把答案文本放进 answers。"
+            if qtype == "completion" and image_note:
+                hint += (
+                    " 如果这是英语选词填空（词库在图片里）且答题处要求填选项字母，"
+                    '请把 answer_form 设为 "letters"，answers 里只写字母。'
+                )
+            parts += ["", hint]
         if reference:
             parts += [
                 "",
@@ -645,23 +656,24 @@ class Solver:
                 raw_answer = checked
         tokens = self._tokens(raw_answer)
 
-        if not options:
-            texts = result.get("answers") or []
-            if isinstance(texts, str):
-                texts = [texts]
-            texts = [str(t).strip() for t in texts if str(t).strip()]
-            if not texts and tokens:
-                texts = [str(t) for t in tokens]
-            display = "#".join(texts)
-            return display, self._format_answer(texts)
-
-        if qtype == "completion":
+        if not options or qtype == "completion":
             texts = result.get("answers") or []
             if isinstance(texts, str):
                 texts = [texts]
             texts = [str(t).strip() for t in texts if str(t).strip()]
             if not texts:
                 texts = [str(t) for t in tokens]
+            # 选词填空：词库是图片、答题处要字母时，模型会返回 answer_form=letters
+            if str(result.get("answer_form") or "").strip().lower() in (
+                "letters",
+                "letter",
+                "字母",
+                "选项",
+            ):
+                letters = self._letter_sequence(texts)
+                if letters:
+                    joined = "#".join(letters)
+                    return joined, joined
             display = "#".join(texts)
             return display, self._format_answer(texts)
 
@@ -697,6 +709,39 @@ class Solver:
         if image_mode:
             return labels, labels
         return labels, self._format_answer([raw for _, raw in picked])
+
+    @staticmethod
+    def _letter_sequence(values) -> list[str]:
+        """把模型给的字母规整成逐个字母：["A","C"] / ["A#C"] / ["AC"] / ["A. word"]。
+
+        只要有一项解释不通就返回空列表，让调用方回退到文本模式——
+        避免把 management 这种单词当成 M/A/N... 拆开。
+        """
+        letters: list[str] = []
+        for value in values:
+            text = str(value).strip().strip("()（）[]【】").strip()
+            if not text:
+                continue
+            numbered = re.fullmatch(r"\d+\s*[-–—.、:：)）]\s*([A-Za-z])", text)
+            if numbered:
+                letters.append(numbered.group(1).upper())
+                continue
+            if re.fullmatch(r"[A-Za-z](?:\s*[,，、;；/|#\-–—]\s*[A-Za-z])+", text):
+                letters.extend(char.upper() for char in text if char.isalpha())
+                continue
+            prefixed = re.fullmatch(r"([A-Za-z])\s*[.、．:：)）]\s*\S.*", text)
+            if prefixed:
+                letters.append(prefixed.group(1).upper())
+                continue
+            bare = text.rstrip(".。、:：,，")
+            if re.fullmatch(r"[A-Za-z]", bare):
+                letters.append(bare.upper())
+                continue
+            if re.fullmatch(r"[A-Z]{2,6}", bare):
+                letters.extend(bare)
+                continue
+            return []
+        return letters
 
     @staticmethod
     def _has_image_options(options) -> bool:

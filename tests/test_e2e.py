@@ -68,6 +68,12 @@ class MockLLM(BaseHTTPRequestHandler):
                       "answer": ["B", "C"], "answers": [], "confidence": 0.9, "need_search": False}
             return self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
 
+        if "选词填空" in question:
+            # 词库是图片、答题处要求填字母：answers 是每个空的字母
+            answer = {"answer": [], "answers": ["A", "C", "B"], "answer_form": "letters",
+                      "confidence": 0.85, "need_search": False, "reason": "1-B 2-A 3-J"}
+            return self._send(self._reply(payload, content=json.dumps(answer, ensure_ascii=False)))
+
         if "多选" in question:
             answer = {"answer": ["A", "C"], "answers": [], "confidence": 0.9, "need_search": False, "reason": "多选"}
         elif "判断" in question:
@@ -594,6 +600,64 @@ class EndToEndTest(unittest.TestCase):
         answer = self.ask("这是一道多选", "A. 甲\nB. 乙\nC. 丙\nD. 丁", "multiple")
         self.assertEqual(answer.labels, "A#C")
         self.assertEqual(answer.answer, "A. 甲#C. 丙")
+
+    def test_resolve_completion_letter_form(self):
+        """answer_form=letters 时把 answers 规整成逐个字母。"""
+        result = {"answers": ["A#C", "B"], "answer_form": "letters"}
+        self.assertEqual(self.solver._resolve(result, [], "completion"), ("A#C#B", "A#C#B"))
+
+        # 模型把字母放进了 answer 也要认
+        result2 = {"answer": ["AC"], "answers": [], "answer_form": "letters"}
+        self.assertEqual(self.solver._resolve(result2, [], "completion"), ("A#C", "A#C"))
+
+        # 模型返回「A. management」这种带单词的形态，只取字母
+        result3 = {"answers": ["A. management", "C. ability"], "answer_form": "letters"}
+        self.assertEqual(self.solver._resolve(result3, [], "completion"), ("A#C", "A#C"))
+
+        # 纯单词不能被拆成字母，退回文本模式
+        result4 = {"answers": ["management"], "answer_form": "letters"}
+        self.assertEqual(self.solver._resolve(result4, [], "completion"), ("management", "management"))
+
+        # 没有 answer_form 或为 text 时保持原样
+        self.assertEqual(
+            self.solver._resolve({"answers": ["北京", "上海"]}, [], "completion"),
+            ("北京#上海", "北京#上海"),
+        )
+        self.assertEqual(
+            self.solver._resolve({"answers": ["北京"], "answer_form": "text"}, [], "completion"),
+            ("北京", "北京"),
+        )
+
+    def test_word_bank_letters_for_completion(self):
+        """选词填空：词库是图片、空里要字母时，不能返回单词本身。"""
+        answer = self.ask(
+            "选词填空：请将正确答案的字母填在横线上",
+            "",
+            "completion",
+            images=[self.png_data_url(11)],
+        )
+        self.assertEqual(answer.code, 1, answer.msg)
+        self.assertEqual(answer.answer, "A#C#B")
+        self.assertEqual(answer.labels, "A#C#B")
+
+        # 题库里存的就是字母串，重启后命中缓存仍然一致
+        bank2 = Bank(self.cfg.bank_dir, self.cfg.bank_file)
+        bank2.load()
+        again = Solver(self.cfg, bank2).solve(
+            SearchRequest(
+                title="选词填空：请将正确答案的字母填在横线上",
+                options="",
+                qtype="completion",
+                images=[self.png_data_url(11)],
+            )
+        )
+        self.assertTrue(again.cached)
+        self.assertEqual(again.answer, "A#C#B")
+
+    def test_completion_keeps_text_when_form_is_text(self):
+        """普通填空题仍然回填文本，不能因为新增 letters 分支而改变。"""
+        answer = self.ask("这道填空题为文字", "", "completion")
+        self.assertEqual(answer.answer, "北京#上海")
 
     def test_http_server(self):
         server = create_server(self.cfg, self.bank, self.solver, "127.0.0.1", 0)

@@ -347,6 +347,10 @@ class OCSCompatTest(unittest.TestCase):
         # 旧的直接拼接会被切碎成用空格连接
         self.assertEqual(resolve_completion(["2#3#5#7#"], 1), ["2 3 5 7"])
 
+    def test_word_bank_letters_for_completion(self):
+        """选词填空的 10 个字母按 # 分隔，OCS 会依次填进每个空。"""
+        self.assertEqual(resolve_completion(["A#C#B"], 3), ["A", "C", "B"])
+
     def test_completion_multiple_blanks(self):
         self.assertEqual(resolve_completion(['["甲","乙"]'], 2), ["甲", "乙"])
         self.assertEqual(resolve_completion(["甲#乙"], 2), ["甲", "乙"])
